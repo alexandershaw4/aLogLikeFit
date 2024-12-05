@@ -1,7 +1,9 @@
 function [x_est, logL, iter, CP] = fitLogLikelihoodLM(y, f, x0, sigma, maxIter, tol, lambda0)
-% Estimate parameters using log-likelihood with Levenberg-Marquardt optimisation.
+%Parameter estimation using log-likelihood optimisation with Levenberg-Marquardt.
 %
-% Includes online updating of hyperparameters (sigma & lambda).
+% This function estimates model parameters by maximising the log-likelihood
+% through iterative optimisation. The algorithm employs the Levenberg-Marquardt 
+% method with dynamic updates of hyperparameters (observation variance and damping factor).
 %
 %  [X, LogL, it] = fitLogLikelihoodLM(y, f, x0, sigma, maxIter, tol, lambda0)
 %
