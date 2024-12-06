@@ -1,10 +1,10 @@
 function [x_est, logL, iter, CP] = fitLogLikelihoodLMFE(y, f, x0, sigma, maxIter, tol, lambda0,sigma_prior)
-% Estimate parameters using log-likelihood and free energy approach
+% Estimate parameters by minimising free energy using log-likelihood
 % with Levenberg-Marquardt optimisation.
 %
 % Includes online updating of hyperparameters (sigma & lambda).
 %
-%  [X, LogL, it] = fitLogLikelihoodLM(y, f, x0, sigma, maxIter, tol, lambda0)
+%  [X, LogL, it] = fitLogLikelihoodLMFE(y, f, x0, sigma, maxIter, tol, lambda0,sigma_prior)
 %
 % Inputs:
 %   y        - Observed data (vector)
@@ -21,8 +21,8 @@ function [x_est, logL, iter, CP] = fitLogLikelihoodLMFE(y, f, x0, sigma, maxIter
 %   LogL  - Final log-likelihood value
 %   it    - Number of iterations performed
 %
-% AS2024
-    
+% AS:12/2024
+
 % Initialize parameters
 x = x0(:);
 lambda = lambda0;  % Initial damping factor
@@ -51,34 +51,27 @@ for iter = 1:maxIter
     % Compute the log-likelihood
     logL = -0.5 * sum((residuals ./ sigma).^2 + log(2 * pi * sigma.^2));
 
-    %complexity = -0.5 * sum(abs((x - mu_prior) ./ sigma_prior).^2 + log(2 * pi * sigma_prior.^2));
-    %complexity = mvgkl(x,diag(sigma_prior),mu_prior,diag(sigma_prior));
+    % Compute complexity term
     complexity = -0.5 * (sum(((x - mu_prior)./sigma_prior).^2 ) + log(2 * pi * prod(sigma_prior)));
 
     free_en = logL + complexity;
 
     % Compute the Jacobian matrix J
     J = computeJacobian(f, x, length(y));
-    
-    %for i = 1:size(J,2)
-    %    J(:,i) = J(:,i)./norm(J(:,i));
-    %end
 
     % Weight residuals by the inverse variances
     W = diag(1 ./ sigma.^2);
+    %residual_contribution = abs(residuals) ./ sum(abs(residuals)); % Normalized contributions
+    %W = diag(1 ./ (sigma.^2 + residual_contribution));  % Update inverse variance matrix
 
     % Gauss-Newton components
     H = J' * W * J;    % Approximate Hessian
     g = J' * W * residuals; % Gradient
 
-    %sigma_prior = sigma_prior - diag(pinv(H)./norm(pinv(H)));
-
-    %g = J' * W * residuals - diag(1 ./ sigma_prior) * (x - mu_prior); % Gradient with prior
-    g = J' * W * residuals + pinv(diag(sigma_prior)) * (mu_prior - x);  % Correct direction of prior regularization
+    % Correct direction of prior regularization
+    g = J' * W * residuals + pinv(diag(sigma_prior)) * (mu_prior - x);
 
     % Levenberg-Marquardt adjustment to Hessian
-    %H_lm = H + lambda * diag(diag(H));
-    %H_lm = H + lambda * diag(diag(H));% + eye(size(H)) * 1e-6;
     H_lm = H + lambda * eye(size(H)) + 1e-8 * diag(diag(H));
 
     % Parameter update
@@ -91,8 +84,6 @@ for iter = 1:maxIter
     residuals_new = y - y_pred_new;
     logL_new = -0.5 * sum((residuals_new ./ sigma).^2 + log(2 * pi * sigma.^2));
 
-    %complexity_new = -0.5 * sum(abs((x_new - mu_prior) ./ sigma_prior).^2 + log(2 * pi * sigma_prior.^2));
-    %complexity_new = mvgkl(x_new,diag(sigma_prior),mu_prior,diag(sigma_prior));
     complexity_new = -0.5 * (sum(((x_new - mu_prior)./sigma_prior).^2 ) + log(2 * pi * prod(sigma_prior)));
 
     free_en_new = logL_new + complexity_new;
@@ -102,13 +93,9 @@ for iter = 1:maxIter
         % Accept step, reduce damping factor
         x = x_new;
         lr = lr * 2;
-        %lambda = lambda / 2;
     else
         % Reject step, increase damping factor
-            lr = lr / 4;
-           
-        %lambda = lambda / 2;
-        %lr = lr / 2;
+        lr = lr / 4;
     end
 
     % clamp lr
@@ -137,7 +124,7 @@ J = computeJacobian(f, x, length(y));  % Jacobian at current estimate
 W = diag(1 ./ sigma.^2);               % Weight matrix
 
 % Fisher Information Matrix
-FIM = J' * W * J + inv(diag(sigma_prior)); 
+FIM = J' * W * J + inv(diag(sigma_prior));
 
 
 % Posterior covariance
