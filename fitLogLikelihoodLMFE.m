@@ -35,6 +35,7 @@ mu_prior = x0(:);
 lr = 1/32;
 sigma_prior = full(sigma_prior);
 
+
 fprintf('Initialise\n');
 fprintf('It: %d | f = %d\n',0,sum(residuals.^2));
 
@@ -101,6 +102,16 @@ for iter = 1:maxIter
     % clamp lr
     lr = min(max(lr, 1e-8), 1);
 
+
+    % Fisher Information Matrix
+    FIM = J' * W * J + inv(diag(sigma_prior));
+
+    % Posterior covariance
+    CP = pinv(FIM);
+
+    % dynamic update of variance
+    sigma_prior = sqrt(diag(CP));
+
     fprintf('It: %d | sse = %d | logLik = %d | complexity = %d\n',iter,sum(residuals.^2),logL_new,complexity_new);
 
     % Show
@@ -120,8 +131,8 @@ end
 x_est = x;
 
 % Compute FIM and posterior covariance
-J = computeJacobian(f, x, length(y));  % Jacobian at current estimate
-W = diag(1 ./ sigma.^2);               % Weight matrix
+%J = computeJacobian(f, x, length(y));  % Jacobian at current estimate
+%W = diag(1 ./ sigma.^2);               % Weight matrix
 
 % Fisher Information Matrix
 FIM = J' * W * J + inv(diag(sigma_prior));
