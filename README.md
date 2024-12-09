@@ -17,11 +17,17 @@ M.aloglik(num_iter) ; <-- log likelihood estimation or
 M.aloglikFE(num_iter) ; <-- free enery estimation 
 
 % to re-run / add more iterations:
+
 M.update_parameters(M.Ep)
+
 M.aloglikFE(num_iter)
 
 % and to access posteriors:
+
 M.Ep
+
 M.CP
+
 M.F
+
 
