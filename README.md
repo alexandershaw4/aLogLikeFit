@@ -9,9 +9,11 @@ Usage:
 
 Given a fully specified DCM, do:
 
-'''
+
 M = aFitDCM(DCM);
+
 M.aloglik(num_iter) ; <-- log likelihood estimation or
+
 M.aloglikFE(num_iter) ; <-- free enery estimation 
 
 % to re-run / add more iterations:
@@ -22,4 +24,4 @@ M.aloglikFE(num_iter)
 M.Ep
 M.CP
 M.F
-'''
+
