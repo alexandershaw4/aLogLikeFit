@@ -3,7 +3,7 @@ function [beta, lambda_vals, t_stats, p_values, posterior_means, posterior_covs]
 % This function implements a Parametric Empirical Bayes (PEB) method for 
 % estimating group-level parameters while incorporating individual-level 
 % priors on the parameters. The approach combines ridge regression with 
-% Bayesian regularization, where prior covariance information about individual 
+% Bayesian regularisation, where prior covariance information about individual 
 % parameters is used to shrink the group-level estimates. It also includes 
 % Automatic Relevance Determination (ARD) to determine the importance of each 
 % predictor. Returns the full individual level posteriors.
@@ -33,7 +33,6 @@ end
 if nargin < 5
     tol = 1e-6; % Default convergence tolerance
 end
-
 
 [N, d] = size(theta);
 p = size(X, 2); % Number of predictors
@@ -69,13 +68,17 @@ for iter = 1:max_iter
 
     % Check for convergence
     if norm(beta - beta_old, 'fro') < tol
+        fprintf('Converged after %d iterations.\n', iter);
         break;
+    end
+
+    if iter == max_iter
+        fprintf('Did not converge after %d iterations.\n', max_iter);
     end
 end
 
-Sigma_residual = cov(theta - X * beta);
-
 % Compute posterior covariances and means
+Sigma_residual = cov(theta - X * beta);
 posterior_covs = Sigma_residual;%zeros(d, d);
 posterior_means = zeros(N, d);
 
