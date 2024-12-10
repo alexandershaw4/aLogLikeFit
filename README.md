@@ -30,4 +30,11 @@ M.CP
 
 M.F
 
+Next, extract the individual posterior parameter means and variances and employ Parametric Empirical Bayes using peb_ard_with_stats.m or peb_ard_with_stats_LM.m. 
 
+These functions implement a Parametric Empirical Bayes (PEB) method for estimating group-level parameters while incorporating individual-level priors. The 
+method combines ridge regression with Bayesian regularisation, using prior covariance information about individual parameters to shrink the group-level 
+estimates. It also includes Automatic Relevance Determination (ARD) to determine the importance of each predictor. The _LM version of the code incorporates the 
+Levenberg-Marquardt (LM) algorithm to optimise the parameter estimation, adjusting the update step to improve convergence and stability.
+
+The function returns the group-level parameter estimates, ARD hyperparameters, t-statistics, p-values, and the individual-level posterior means and covariances.
