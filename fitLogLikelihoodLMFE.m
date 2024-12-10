@@ -162,3 +162,18 @@ for i = 1:n
     J(:, i) = (f(x_step) - f(x)) / epsilon;
 end
 end
+
+function J = computeJacobianCentral(f, x, m)
+    epsilon = 1e-6;  % Small step size for finite differences
+    n = length(x);
+    J = zeros(m, n);
+
+    parfor i = 1:n
+        x_step_forward = x;
+        x_step_backward = x;
+        x_step_forward(i) = x_step_forward(i) + epsilon;
+        x_step_backward(i) = x_step_backward(i) - epsilon;
+
+        J(:, i) = (f(x_step_forward) - f(x_step_backward)) / (2 * epsilon);
+    end
+end
