@@ -1,3 +1,17 @@
+This repository contains a collection of routines for fitting first-level (individual) models in computational psychiatry, specifically spectral DCMs to neurophysiology data. 
+The repository includes:
+
+fitLogLikelihoodLM.m: A routine for log likelihood estimation, i.e. for model fitting in the context of hierarchical Bayesian models.
+
+fitLogLikelihoodLMFE.m: A variant of the log likelihood estimation routine that incorporates free energy minimisation for better model optimisation.
+
+peb_ard_with_stats.m: A Parametric Empirical Bayes (PEB) routine for fitting models with automatic relevance determination (ARD), including statistical output for model evaluation.
+
+peb_ard_with_stats_LM.m: An adaptation of the PEB routine incorporating log likelihood and free energy estimation for more robust parameter estimation and statistical analysis.
+
+
+Brief guide -->
+
 Fit a spectral neural mass model, specified using the DCM conventional structure (DCM with DCM.M.pE, DCM.M.pC,DCM.M.f, DCM.M.IS and DCM.xY specified).
 
 Parameter estimation using log-likelihood (and/or Free Energy) optimisation with Levenberg-Marquardt.
