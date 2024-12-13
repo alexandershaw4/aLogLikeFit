@@ -8,7 +8,7 @@ function [beta, lambda_vals, t_stats, p_values, posterior_means, posterior_covs]
 % Automatic Relevance Determination (ARD) to determine the importance of each 
 % predictor. Returns the full individual level posteriors.
 %
-% This version accepts individual level covariances (i.e. derived from the
+% This version accepts individual level parameter covariances (i.e. derived from the
 % first level fits).
 %
 %  [b,l,t,p,pos_mu,pos_cov] = peb_ard_with_stats(theta, X, Sigma_theta_prior, max_iter, tol)
@@ -45,7 +45,9 @@ lambda_vals = ones(p, 1);
 beta = zeros(p, d);
 
 % Initialize residual variance
-sigma_squared = ones(1, d); 
+%sigma_squared = ones(1, d); 
+sigma_squared = ones(N, d);
+
 
 % Precompute inverses of Sigma_theta_prior for efficiency
 Sigma_theta_prior_inv = zeros(N, d, d);
@@ -66,9 +68,11 @@ for iter = 1:max_iter
     % Update ARD hyperparameters
     lambda_vals = 1 ./ (sum(beta.^2, 2) + 1e-6);
 
-    % Update residual variance sigma_squared
-    residuals = theta - X * beta;
-    sigma_squared = var(residuals, 0, 1);
+    % Update subject- and parameter-specific residual variance
+    for i = 1:N
+        residuals_i = (theta(i, :) - (X(i, :) * beta))';
+        sigma_squared(i, :) = (residuals_i.^2 + diag(squeeze(Sigma_theta_prior(i, :, :)))) / (1 + 1);
+    end
 
     % Check for convergence
     if norm(beta - beta_old, 'fro') < tol
@@ -88,18 +92,22 @@ posterior_covs = zeros(N, d, d);
 for i = 1:N
     % Subject-specific posterior covariance
     Sigma_post_inv = squeeze(Sigma_theta_prior_inv(i, :, :)) + ...
-                     (1 / sigma_squared(i)) * eye(d);
+                     diag(1 ./ sigma_squared(i, :)); % Per parameter
     posterior_covs(i, :, :) = inv(Sigma_post_inv);
 
     % Subject-specific posterior mean
-    posterior_means(i, :) = squeeze(posterior_covs(i, :, :)) *...
-        (squeeze(Sigma_theta_prior_inv(i, :, :)) * theta(i, :)' + (1 / sigma_squared(i)) * (X(i, :) * beta)');
+    posterior_means(i, :) = (squeeze(posterior_covs(i, :, :)) * ...
+        (squeeze(Sigma_theta_prior_inv(i, :, :)) * theta(i, :)' + ...
+        diag(1 ./ sigma_squared(i, :)) * (X(i, :) * beta)'))';
 end
+
+% Aggregate sigma_squared across subjects to get a single variance per parameter
+sigma_squared_mean = mean(sigma_squared, 1); % (1 x d)
 
 % Compute variance of beta
 beta_variance = zeros(p, d);
 for j = 1:p
-    beta_variance(j, :) = sigma_squared ./ (sum(X(:, j).^2) + lambda_vals(j)^-1);
+    beta_variance(j, :) = sigma_squared_mean ./ (sum(X(:, j).^2) + lambda_vals(j)^-1);
 end
 
 % Compute t-statistics
@@ -108,5 +116,4 @@ t_stats = beta ./ sqrt(beta_variance);
 % Compute p-values (two-tailed)
 df = N - p; % Degrees of freedom
 p_values = 2 * (1 - tcdf(abs(t_stats), df));
-
 end
