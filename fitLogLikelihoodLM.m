@@ -1,4 +1,4 @@
-function [x_est, logL, iter, CP] = fitLogLikelihoodLM(y, f, x0, sigma, maxIter, tol, lambda0)
+function [x_est, logL, iter, CP] = fitLogLikelihoodLM(y, f, x0, prior_variances, sigma, maxIter, tol, lambda0)
 % Parameter estimation using log-likelihood optimisation with Levenberg-Marquardt.
 %
 % This function estimates model parameters by maximising the log-likelihood
@@ -104,9 +104,18 @@ x_est = x;
 J = computeJacobian(f, x, length(y));  % Jacobian at current estimate
 W = diag(1 ./ sigma.^2);               % Weight matrix
 
-% Fisher Information Matrix
+% Assume prior variances are provided in a vector 'prior_variances'
+prior_variance_matrix = diag(1 ./ prior_variances);  % Inverse of prior variances (precision matrix)
+
+% Compute FIM as before
 FIM = J' * W * J;
 
+% Add prior variance (inverse of the covariance) to the FIM
+FIM = FIM + prior_variance_matrix;
+
+% Regularize the FIM to improve conditioning if needed
+regularization_factor = 1e-6;
+FIM = FIM + eye(size(FIM)) * regularization_factor;
 
 % Posterior covariance
 CP = pinv(FIM);
@@ -122,7 +131,7 @@ function J = computeJacobian(f, x, m)
 % Outputs:
 %   J: Jacobian matrix (m x length(x))
 
-epsilon = 1e-6;  % Small step size for finite differences
+epsilon = 1e-8;  % Small step size for finite differences
 n = length(x);
 J = zeros(m, n);
 

@@ -211,20 +211,26 @@ classdef aFitDCM < handle
             %x0 = spm_vec(obj.DCM.M.pE);
             M  = obj.DCM.M;
             %V  = spm_vec(obj.DCM.M.pC);
+            V  = (obj.opts.V );
             y  = spm_vec(obj.DCM.xY.y);
 
             sigma = 1 * ones(size(y));
 
             %[x_est, logL, iter] = fitLogLikelihoodGN(y, fun, x0, sigma, maxit, 1e-6);
 
-            [obj.X, obj.F, iter,obj.CP] = fitLogLikelihoodLM(y, fun, x0, sigma, maxit, 1e-6, 0.1)
+            %[obj.X, obj.F, iter,obj.CP] = fitLogLikelihoodLM(y, fun, x0, sigma, maxit, 1e-6, 0.1)
+
+            [obj.X, obj.F, iter,obj.CP] = fitLogLikelihoodLM(y, fun, x0, V,sigma, maxit, 1e-6, 0.1)
+
 
             [~, P] = fun(spm_vec(obj.X));
             obj.Ep = spm_unvec(spm_vec(P),obj.DD.M.pE);
 
         end
 
-        function aloglikp(obj,maxit)
+        
+
+        function aloglikVL(obj,maxit)
 
             if nargin < 2; 
                 maxit = 32;
@@ -237,21 +243,50 @@ classdef aFitDCM < handle
 
             %x0 = spm_vec(obj.DCM.M.pE);
             M  = obj.DCM.M;
-            %V  = spm_vec(obj.DCM.M.pC);
+            V  = diag(obj.opts.V );
             y  = spm_vec(obj.DCM.xY.y);
 
             sigma = 1 * ones(size(y));
 
             %[x_est, logL, iter] = fitLogLikelihoodGN(y, fun, x0, sigma, maxit, 1e-6);
 
-            num_basis = 12;
-
-            [obj.X, obj.F, iter,obj.CP] = fitLogLikelihoodLMprecision(y, fun, x0, sigma, maxit, 1e-6, 0.1,num_basis);
+           % [obj.X, obj.F, iter,obj.CP] = fitLogLikelihoodLM(y, fun, x0, sigma, maxit, 1e-6, 0.1)
+            [obj.X, obj.CP, obj.F] = fitVariationalLaplace(y, fun, x0, V, sigma, maxit, 1e-6);
 
             [~, P] = fun(spm_vec(obj.X));
             obj.Ep = spm_unvec(spm_vec(P),obj.DD.M.pE);
 
         end
+
+
+        % function aloglikp(obj,maxit)
+        % 
+        %     if nargin < 2; 
+        %         maxit = 32;
+        %     end
+        % 
+        %     %fun = @(P,M) spm_vec(obj.DCM.M.IS(spm_unvec(P,obj.DCM.M.pE),obj.DCM.M,obj.DCM.xU));
+        % 
+        %     x0  = obj.opts.x0(:);
+        %     fun = @(varargin)obj.wrapdm(varargin{:});
+        % 
+        %     %x0 = spm_vec(obj.DCM.M.pE);
+        %     M  = obj.DCM.M;
+        %     %V  = spm_vec(obj.DCM.M.pC);
+        %     y  = spm_vec(obj.DCM.xY.y);
+        % 
+        %     sigma = 1 * ones(size(y));
+        % 
+        %     %[x_est, logL, iter] = fitLogLikelihoodGN(y, fun, x0, sigma, maxit, 1e-6);
+        % 
+        %     num_basis = 12;
+        % 
+        %     [obj.X, obj.F, iter,obj.CP] = fitLogLikelihoodLMprecision(y, fun, x0, sigma, maxit, 1e-6, 0.1,num_basis);
+        % 
+        %     [~, P] = fun(spm_vec(obj.X));
+        %     obj.Ep = spm_unvec(spm_vec(P),obj.DD.M.pE);
+        % 
+        % end
 
         function aloglikFE(obj,maxit)
 

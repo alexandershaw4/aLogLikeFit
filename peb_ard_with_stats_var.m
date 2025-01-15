@@ -44,7 +44,7 @@ p = size(X, 2); % Number of predictors
 lambda_vals = ones(p, 1);
 beta = zeros(p, d);
 
-% Initialize residual variance
+% Initialize residual variance ver
 %sigma_squared = ones(1, d); 
 sigma_squared = ones(N, d);
 
