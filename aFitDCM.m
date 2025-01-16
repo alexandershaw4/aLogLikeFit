@@ -220,7 +220,7 @@ classdef aFitDCM < handle
 
             %[obj.X, obj.F, iter,obj.CP] = fitLogLikelihoodLM(y, fun, x0, sigma, maxit, 1e-6, 0.1)
 
-            [obj.X, obj.F, iter,obj.CP] = fitLogLikelihoodLM(y, fun, x0, V,sigma, maxit, 1e-6, 0.1)
+            [obj.X, obj.F, iter,obj.CP] = fitLogLikelihoodLMHV(y, fun, x0, V,sigma, maxit, 1e-6, 0.1)
 
 
             [~, P] = fun(spm_vec(obj.X));
@@ -246,12 +246,7 @@ classdef aFitDCM < handle
             V  = diag(obj.opts.V );
             y  = spm_vec(obj.DCM.xY.y);
 
-            sigma = 1 * ones(size(y));
-
-            %[x_est, logL, iter] = fitLogLikelihoodGN(y, fun, x0, sigma, maxit, 1e-6);
-
-           % [obj.X, obj.F, iter,obj.CP] = fitLogLikelihoodLM(y, fun, x0, sigma, maxit, 1e-6, 0.1)
-            [obj.X, obj.CP, obj.F] = fitVariationalLaplace(y, fun, x0, V, sigma, maxit, 1e-6);
+            [obj.X, obj.CP, obj.F] = fitVariationalLaplace(y, fun, x0, V, maxit, 1e-6);
 
             [~, P] = fun(spm_vec(obj.X));
             obj.Ep = spm_unvec(spm_vec(P),obj.DD.M.pE);
