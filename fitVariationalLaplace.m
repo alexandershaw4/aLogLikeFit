@@ -43,6 +43,9 @@ for iter = 1:maxIter
     logL_likelihood = -0.5 * sum((residuals.^2 ./ sigma2) + log(2 * pi * sigma2));
     J = computeJacobian(f, m, n);
 
+    Cv = atcm.fun.estcov(residuals,length(residuals));
+
+    
     % ELBO components
     H = J' * diag(1 ./ sigma2) * J; % Likelihood Hessian
     g = J' * diag(1 ./ sigma2) * residuals; % Gradient

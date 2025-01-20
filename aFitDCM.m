@@ -218,9 +218,7 @@ classdef aFitDCM < handle
 
             %[x_est, logL, iter] = fitLogLikelihoodGN(y, fun, x0, sigma, maxit, 1e-6);
 
-            %[obj.X, obj.F, iter,obj.CP] = fitLogLikelihoodLM(y, fun, x0, sigma, maxit, 1e-6, 0.1)
-
-            [obj.X, obj.F, iter,obj.CP] = fitLogLikelihoodLMHV(y, fun, x0, V,sigma, maxit, 1e-6, 0.1)
+            [obj.X, obj.F, iter,obj.CP] = fitLogLikelihoodLM(y, fun, x0, sigma, maxit, 1e-6, 0.1);
 
 
             [~, P] = fun(spm_vec(obj.X));
