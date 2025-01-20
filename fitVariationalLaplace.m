@@ -25,10 +25,11 @@ function [m, S, logL, iter,sigma2] = fitVariationalLaplace(y, f, m0, S0, maxIter
 m = m0(:); % Mean of variational distribution
 S = S0;    % Covariance of variational distribution
 n = length(y);
-sigma2  = ones(n, 1); % Initialize variances (homoscedastic starting point)
-epsilon = 1e-6;      % Small value to ensure positivity
-beta = 1e-3;         % Smoothing parameter for variance updates
-nu   = 1.0;            % Scaling factor for variance updates
+
+sigma2  = ones(n, 1);   % Initialize variances (homoscedastic starting point)
+epsilon = 1e-6;         % Small value to ensure positivity
+beta    = 1e-3;         % Smoothing parameter for variance updates
+nu      = 1.0;          % Scaling factor for variance updates
 
 for iter = 1:maxIter
     % Predictions and residuals
@@ -46,16 +47,22 @@ for iter = 1:maxIter
     H = J' * diag(1 ./ sigma2) * J; % Likelihood Hessian
     g = J' * diag(1 ./ sigma2) * residuals; % Gradient
 
-    % GN components
     H_prior = inv(S0 + eye(size(S0)) * 1e-6);
     g_prior = H_prior * (m - m0);
     
     H_elbo = H + H_prior;
     g_elbo = g - g_prior;
 
-    % Update mean and covariance
+    % Update mean and covariance ( could just inv(H)*g )
     dm = pcg(H_elbo, g_elbo, 1e-6, 100);  % Conjugate Gradient method
-    m  = m + dm; 
+
+    % Perform line search to find optimal step size
+    alpha_opt = fminbnd(@(alpha) -lineSearchObjective(alpha, m, dm, y, f, H_prior, m0, sigma2), 0, 1);
+
+    % Update the mean parameter estimate
+    m = m + alpha_opt * dm;
+
+    %m  = m + dm; 
     S  = pinv(H_elbo + eye(size(H_elbo)) * 1e-6);
 
     % Compute ELBO
@@ -111,7 +118,25 @@ J = zeros(m, n);
 
 for i = 1:n
     x_step = x;
+    x_stepb = x;
     x_step(i) = x_step(i) + epsilon;
-    J(:, i) = (f(x_step) - f(x)) / epsilon;
+    x_stepb(i) = x_stepb(i) - epsilon;
+    
+
+    J(:, i) = (f(x_step) - f(x_stepb)) / epsilon;
 end
+end
+
+function elbo = lineSearchObjective(alpha, m, delta_m, y, f, H_prior, m0, sigma2)
+    % Update the parameter estimate
+    m_new = m + alpha * delta_m;
+    % Predictions and residuals
+    y_pred_new = f(m_new);
+    residuals_new = y - y_pred_new;
+    % Log-likelihood
+    logL_likelihood = -0.5 * sum((residuals_new.^2 ./ sigma2) + log(2 * pi * sigma2));
+    % Prior contribution
+    logL_prior = -0.5 * ((m_new - m0)' * H_prior * (m_new - m0));
+    % Total ELBO
+    elbo = logL_likelihood + logL_prior;
 end
