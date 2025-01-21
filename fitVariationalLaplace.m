@@ -43,12 +43,16 @@ for iter = 1:maxIter
     logL_likelihood = -0.5 * sum((residuals.^2 ./ sigma2) + log(2 * pi * sigma2));
     J = computeJacobian(f, m, n);
 
-    Cv = atcm.fun.estcov(residuals,length(residuals));
+    % ELBO components [using just diag(1.sigma)]
+    % H = J' * diag(1 ./ sigma2) * J; % Likelihood Hessian
+    % g = J' * diag(1 ./ sigma2) * residuals; % Gradient
 
-    
-    % ELBO components
-    H = J' * diag(1 ./ sigma2) * J; % Likelihood Hessian
-    g = J' * diag(1 ./ sigma2) * residuals; % Gradient
+    % Smooth weights
+    W = radialPD(sigma2,2)*diag(1./sigma2)*radialPD(sigma2,2)';
+
+    % ELBO components [using full radially-smoothed W]
+    H = J' * (W) * J; % Likelihood Hessian
+    g = J' * (W) * residuals; % Gradient
 
     H_prior = inv(S0 + eye(size(S0)) * 1e-6);
     g_prior = H_prior * (m - m0);
@@ -59,13 +63,7 @@ for iter = 1:maxIter
     % Update mean and covariance ( could just inv(H)*g )
     dm = pcg(H_elbo, g_elbo, 1e-6, 100);  % Conjugate Gradient method
 
-    % Perform line search to find optimal step size
-    alpha_opt = fminbnd(@(alpha) -lineSearchObjective(alpha, m, dm, y, f, H_prior, m0, sigma2), 0, 1);
-
-    % Update the mean parameter estimate
-    m = m + alpha_opt * dm;
-
-    %m  = m + dm; 
+    m  = m + dm; 
     S  = pinv(H_elbo + eye(size(H_elbo)) * 1e-6);
 
     % Compute ELBO
@@ -119,7 +117,7 @@ epsilon = 1e-6;  % Small step size for finite differences
 n = length(x);
 J = zeros(m, n);
 
-for i = 1:n
+parfor i = 1:n
     x_step = x;
     x_stepb = x;
     x_step(i) = x_step(i) + epsilon;
