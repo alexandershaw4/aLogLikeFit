@@ -44,15 +44,15 @@ for iter = 1:maxIter
     J = computeJacobian(f, m, n);
 
     % ELBO components [using just diag(1.sigma)]
-    % H = J' * diag(1 ./ sigma2) * J; % Likelihood Hessian
-    % g = J' * diag(1 ./ sigma2) * residuals; % Gradient
+     H = J' * diag(1 ./ sigma2) * J; % Likelihood Hessian
+     g = J' * diag(1 ./ sigma2) * residuals; % Gradient
 
     % Smooth weights
-    W = radialPD(sigma2,2)*diag(1./sigma2)*radialPD(sigma2,2)';
+    %W = radialPD(sigma2,2)*diag(1./sigma2)*radialPD(sigma2,2)';
 
     % ELBO components [using full radially-smoothed W]
-    H = J' * (W) * J; % Likelihood Hessian
-    g = J' * (W) * residuals; % Gradient
+    %H = J' * (W) * J; % Likelihood Hessian
+    %g = J' * (W) * residuals; % Gradient
 
     H_prior = inv(S0 + eye(size(S0)) * 1e-6);
     g_prior = H_prior * (m - m0);

@@ -135,7 +135,7 @@ epsilon = 1e-8;  % Small step size for finite differences
 n = length(x);
 J = zeros(m, n);
 
-for i = 1:n
+parfor i = 1:n
     x_step = x;
     x_step(i) = x_step(i) + epsilon;
     J(:, i) = (f(x_step) - f(x)) / epsilon;
