@@ -24,6 +24,12 @@ G = exp(-D.^2 ./ (2 * sigma.^2)); % Apply Gaussian function
 % Positive-definite scaling (optional)
 % Ensure matrix G is symmetric and positive-definite
 G = (G + G') / 2; % Symmetrize
+
+% Adjust diagonal elements to match input vector Q
+for i = 1:n
+    G(i, i) = Q(i);
+end
+
 G = G + eye(n) * 1e-6; % Add small diagonal for numerical stability
 
 % eigendecomposition
