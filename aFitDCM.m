@@ -124,7 +124,7 @@ classdef aFitDCM < handle
             
             X0 = cm*Px(:);
             X0(X0==0)=1;
-            X0 = full(X0.*exp(P(:)));
+            X0 = full(full(X0).*exp(full(P(:))));
             X0 = log(X0);
             X0(isinf(X0)) = 0;
             
@@ -197,6 +197,53 @@ classdef aFitDCM < handle
             
         end
 
+        function afitNN(obj)
+        
+             x0  = obj.opts.x0(:);
+            fun = @(varargin)obj.wrapdm(varargin{:});
+
+            %x0 = spm_vec(obj.DCM.M.pE);
+            M  = obj.DCM.M;
+            %V  = spm_vec(obj.DCM.M.pC);
+            V  = (obj.opts.V );
+            y  = spm_vec(obj.DCM.xY.y);
+
+
+            % purturb the system a bunch of times and get outputs
+            fprintf('Generating test data: simulating\n');
+            [X_train, Y_train] = generate_training_data(fun, x0, V, 1000);
+
+            % Train Neural Network
+            fprintf('Training fully-connected NN\n');
+            net = train_nn(Y_train, X_train);
+
+            % accuracy recovering priors
+            x_true = x0;
+            y_empirical = fun(x_true); % Replace with real experimental spectral data
+            x_estimated = infer_parameters(net, y_empirical(:)');
+            y_predicted = fun(double(x_estimated(:)));
+
+            % recovering posteriors
+            x_estimated = infer_parameters(net, y(:)');
+            y_predicted = fun(double(x_estimated(:)));
+
+            % Plot Example Spectra
+            figure; w = 1:length(y_empirical);
+            plot(w, y, 'b',w,y_predicted,'r', 'LineWidth', 2);
+            title('Model Fit');
+            xlabel('Frequency Bin');
+            ylabel('Power');
+            grid on;
+
+
+            % return outputs
+            obj.X = double(x_estimated(:));
+            obj.F = sum( (y(:) - y_predicted(:)).^2);
+            [~, P] = fun(spm_vec(obj.X));
+            obj.Ep = spm_unvec(spm_vec(P),obj.DD.M.pE);
+
+        end
+
         function aloglik(obj,maxit)
 
             if nargin < 2; 
@@ -249,6 +296,51 @@ classdef aFitDCM < handle
             [~, P] = fun(spm_vec(obj.X));
             obj.Ep = spm_unvec(spm_vec(P),obj.DD.M.pE);
 
+        end
+
+        function aloglikVLtherm(obj,maxit)
+
+            if nargin < 2; 
+                maxit = 32;
+            end
+
+            %fun = @(P,M) spm_vec(obj.DCM.M.IS(spm_unvec(P,obj.DCM.M.pE),obj.DCM.M,obj.DCM.xU));
+
+            x0  = obj.opts.x0(:);
+            fun = @(varargin)obj.wrapdm(varargin{:});
+
+            %x0 = spm_vec(obj.DCM.M.pE);
+            M  = obj.DCM.M;
+            V  = diag(obj.opts.V );
+            y  = spm_vec(obj.DCM.xY.y);
+
+            [obj.X, obj.CP, obj.F] = fitVariationalLaplaceThermoGM(y, fun, x0, V, maxit, 1e-6,6);
+            %[obj.X, obj.CP, obj.F] = fitVariationalLaplaceThermo4thOrder(y, fun, x0, V, maxit, 1e-6);
+            %[obj.X, obj.CP, obj.F] = fitVariationalLaplaceNF(y, fun, x0, V, maxit, 1e-6);
+
+            [~, P] = fun(spm_vec(obj.X));
+            obj.Ep = spm_unvec(spm_vec(P),obj.DD.M.pE);
+
+        end
+
+        function fitRL(obj,maxit)
+
+            if nargin < 2; 
+                maxit = 100;
+            end
+
+            x0  = obj.opts.x0(:);
+            fun = @(varargin)obj.wrapdm(varargin{:});
+
+            %x0 = spm_vec(obj.DCM.M.pE);
+            M  = obj.DCM.M;
+            V  = diag(obj.opts.V );
+            y  = spm_vec(obj.DCM.xY.y);
+
+            [obj.X, obj.F] = rl_parameter_optimization(fun, x0, y, V,maxit);
+
+            [~, P] = fun(spm_vec(obj.X));
+            obj.Ep = spm_unvec(spm_vec(P),obj.DD.M.pE);
         end
 
 

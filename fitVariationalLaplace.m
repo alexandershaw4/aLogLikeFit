@@ -1,6 +1,8 @@
 function [m, S, logL, iter,sigma2] = fitVariationalLaplace(y, f, m0, S0, maxIter, tol)
 % Variational Laplace with iterative optimization of heteroscedastic variance.
 %
+% [m, S, logL, iter,sigma2] = fitVariationalLaplace(y, f, m0, S0, maxIter, tol)
+%
 % This function uses Variational Laplace to approximate the posterior over parameters
 % given observed data and a generative model.
 %
@@ -58,6 +60,7 @@ for iter = 1:maxIter
 
     m  = m + dm; 
     S  = pinv(H_elbo + eye(size(H_elbo)) * 1e-6);
+    S  = (S+S')./2;
 
     % Compute ELBO
     cholS = chol(S + eye(size(S)) * 1e-6, 'lower');
@@ -78,7 +81,7 @@ for iter = 1:maxIter
     plot(w, y_pred_new, 'r-', 'LineWidth', 2, 'DisplayName', 'Current Prediction');
     plot(w, sqrt(sigma2), 'g-', 'LineWidth', 1.5, 'DisplayName', 'Heteroscedastic σ'); % Variance curve
     hold off;
-    title('Model Fit with Heteroscedastic Variance');
+    title('Model Fit: Variational Laplace');
     xlabel('Data Index');
     ylabel('Value');
     legend('Location', 'best');
@@ -120,6 +123,8 @@ parfor i = 1:n
     J(:, i) = (f(x_step) - f(x_stepb)) / epsilon;
 end
 end
+
+
 
 % function elbo = lineSearchObjective(alpha, m, delta_m, y, f, H_prior, m0, sigma2)
 %     % Update the parameter estimate

@@ -102,7 +102,6 @@ for iter = 1:maxIter
     % clamp lr
     lr = min(max(lr, 1e-8), 1);
 
-
     % Fisher Information Matrix
     FIM = J' * W * J + inv(diag(sigma_prior));
 
