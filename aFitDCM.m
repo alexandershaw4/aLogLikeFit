@@ -30,6 +30,8 @@ classdef aFitDCM < handle
         Pp
         FreeEnergyF
         iS
+        D
+        allp
     end
     
     methods
@@ -314,12 +316,14 @@ classdef aFitDCM < handle
             V  = diag(obj.opts.V );
             y  = spm_vec(obj.DCM.xY.y);
 
-            [obj.X, obj.CP, obj.F] = fitVariationalLaplaceThermoGM(y, fun, x0, V, maxit, 1e-6,6);
+            % [m, V, D, logL, iter, sigma2, allm] 
+            [obj.X, obj.CP, obj.D, obj.F,~,~,obj.allp] = fitVariationalLaplaceThermo(y, fun, x0, V, maxit, 1e-6);
             %[obj.X, obj.CP, obj.F] = fitVariationalLaplaceThermo4thOrder(y, fun, x0, V, maxit, 1e-6);
             %[obj.X, obj.CP, obj.F] = fitVariationalLaplaceNF(y, fun, x0, V, maxit, 1e-6);
 
             [~, P] = fun(spm_vec(obj.X));
             obj.Ep = spm_unvec(spm_vec(P),obj.DD.M.pE);
+            obj.CP = obj.CP * obj.CP' + obj.D;
 
         end
 
