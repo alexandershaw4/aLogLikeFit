@@ -3,7 +3,7 @@ function [m, V, D, logL, iter, sigma2, allm] = fitVariationalLaplaceThermo(y, f,
 % Updates, and Thermodynamic Integration. Non extended version is fitVariationalLaplace.
 %
 % Fits dynamical systems models of the form;
-%          y = f(x) + e 
+%          y = f(m) + e 
 %
 % This routine estimates a Gaussian variational posterior over the latent 
 % variables, refining its mean and covariance structure via a Laplace 
@@ -11,13 +11,14 @@ function [m, V, D, logL, iter, sigma2, allm] = fitVariationalLaplaceThermo(y, f,
 % is efficiently represented using a low-rank plus diagonal structure 
 % (S ≈ VV^T + D), allowing for tractable optimization even in high dimensions.
 %
+% Returs the posterior: q(z) ~ N(m, VVᵀ + D)
+%
 % Key Features:
 % - Smarter variance updates: Dynamically adapts observation noise variances (sigma2).
 % - Thermodynamic integration: Computes log evidence estimates via annealed variational inference.
 % - Low-rank covariance approximation: Captures dependencies without full covariance estimation.
 %
 % [m, V, D, logL, iter, sigma2] = fitVariationalLaplaceThermo(y, f, m0, S0, maxIter, tol)
-%
 %
 % Inputs:
 %   y        - Observed data (vector)
@@ -187,6 +188,44 @@ for iter = 1:maxIter
     drawnow;
 
     
+    % Convergence check
+    if norm(dm) < tol
+        fprintf('Converged at iteration %d\n', iter);
+        break;
+    end
+    
+    fprintf('Iter: %d | ELBO: %.4f | ||dm||: %.4f\n', iter, logL, norm(dm));
+end
+end
+
+function K = computeSmoothCovariance(x, lengthScale)
+    n = length(x);
+    K = exp(-pdist2(x(:), x(:)).^2 / (2 * lengthScale^2));
+    K = K + 1e-6 * eye(n); % Regularization for numerical stability
+end
+
+
+
+function J = computeJacobian(f, x, m)
+epsilon = 1e-6;
+n = length(x);
+J = zeros(m, n);
+parfor i = 1:n
+    x_step = x;
+    x_stepb = x;
+    x_step(i) = x_step(i) + epsilon;
+    x_stepb(i) = x_stepb(i) - epsilon;
+    J(:, i) = (f(x_step) - f(x_stepb)) / (2 * epsilon);
+end
+end
+
+% function J = computeJacobianAD(f, x)
+%     x_dl = dlarray(x);  % Convert to differentiable dlarray
+%     y_dl = f(x_dl);     % Ensure f(x) outputs a scalar or element-wise function
+%     J_dl = dlgradient(sum(y_dl), x_dl); % Compute gradient
+%     J = extractdata(J_dl); % Convert back to normal MATLAB array
+% end
+
     % % Plot observed data, predictions, and variance
     % figure(fw); clf;
     % subplot(2,4,[1:4]);
@@ -225,41 +264,3 @@ for iter = 1:maxIter
     % 
     % drawnow;
     % 
-
-    % Convergence check
-    if norm(dm) < tol
-        fprintf('Converged at iteration %d\n', iter);
-        break;
-    end
-    
-    fprintf('Iter: %d | ELBO: %.4f | ||dm||: %.4f\n', iter, logL, norm(dm));
-end
-end
-
-function K = computeSmoothCovariance(x, lengthScale)
-    n = length(x);
-    K = exp(-pdist2(x(:), x(:)).^2 / (2 * lengthScale^2));
-    K = K + 1e-6 * eye(n); % Regularization for numerical stability
-end
-
-
-
-function J = computeJacobian(f, x, m)
-epsilon = 1e-6;
-n = length(x);
-J = zeros(m, n);
-parfor i = 1:n
-    x_step = x;
-    x_stepb = x;
-    x_step(i) = x_step(i) + epsilon;
-    x_stepb(i) = x_stepb(i) - epsilon;
-    J(:, i) = (f(x_step) - f(x_stepb)) / (2 * epsilon);
-end
-end
-
-% function J = computeJacobianAD(f, x)
-%     x_dl = dlarray(x);  % Convert to differentiable dlarray
-%     y_dl = f(x_dl);     % Ensure f(x) outputs a scalar or element-wise function
-%     J_dl = dlgradient(sum(y_dl), x_dl); % Compute gradient
-%     J = extractdata(J_dl); % Convert back to normal MATLAB array
-% end
