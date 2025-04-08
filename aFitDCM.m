@@ -98,6 +98,7 @@ classdef aFitDCM < handle
             
             
             opts.y   = spm_vec(obj.DCM.xY.y);
+            opts.y = [real(opts.y); imag(opts.y)];
            
                        
             % save this read for inversion
@@ -105,7 +106,7 @@ classdef aFitDCM < handle
             obj.pE   = p(:);
             obj.pC   = c(:);
             obj.DD   = DD;
-            obj.Y    = DCM.xY.y;
+            obj.Y    = [real(DCM.xY.y{1}); imag(DCM.xY.y{1})];
             
             
         end
@@ -139,36 +140,38 @@ classdef aFitDCM < handle
             
             IS   = spm_funcheck(DD.M.IS);       % Integrator
 
-            if nargin == 3 
-                if ~isstruct(varargin{1}) && varargin{1} == 1
-                    % trigger fixed-point search
-                    x0 = atcm.fun.alexfixed(PP,DD.M,1e-6);
-                    
-                    obj.DD.M.x = spm_unvec(x0,obj.DD.M.x);
-                    
-                end
-
-            end
+            % if nargin == 3 
+            %     if ~isstruct(varargin{1}) && varargin{1} == 1
+            %         % trigger fixed-point search
+            %         x0 = atcm.fun.alexfixed(PP,DD.M,1e-6);
+            % 
+            %         obj.DD.M.x = spm_unvec(x0,obj.DD.M.x);
+            % 
+            %     end
+            % 
+            % end
             
-            if nargout(IS) < 8
+            %if nargout(IS) < 8
             %generic, works for all functions....
                 y    = IS(PP,DD.M,DD.xU);
  
-            elseif nargout(IS) == 8
-            % this is specific to atcm.integrate3.m
-                [y,w,s,g,t,pst,l,oth] = IS(PP,DD.M,DD.xU);
-                s = (s{1});
-                s = reshape(s,[size(s,1)*size(s,2)*size(s,3),size(s,4)]);
-                jj = find(exp(PP.J));
-                s = s(jj,:);
-                t = pst;
-               % centrefreqs = l{1}.centrals{1};
-               centrefreqs=[];
-           end
+           %  elseif nargout(IS) == 8
+           %  % this is specific to atcm.integrate3.m
+           %      [y,w,s,g,t,pst,l,oth] = IS(PP,DD.M,DD.xU);
+           %      s = (s{1});
+           %      s = reshape(s,[size(s,1)*size(s,2)*size(s,3),size(s,4)]);
+           %      jj = find(exp(PP.J));
+           %      s = s(jj,:);
+           %      t = pst;
+           %     % centrefreqs = l{1}.centrals{1};
+           %     centrefreqs=[];
+           % end
             
             %y    = IS(PP,DD.M,DD.xU);           % Prediction
             y    = spm_vec(y);
             y    = real(y);
+
+            %y = [real(y); imag(y)];
             
         end
 
@@ -314,7 +317,7 @@ classdef aFitDCM < handle
             %x0 = spm_vec(obj.DCM.M.pE);
             M  = obj.DCM.M;
             V  = diag(obj.opts.V );
-            y  = spm_vec(obj.DCM.xY.y);
+            y  = spm_vec(obj.DCM.xY.y);%[real(spm_vec(obj.DCM.xY.y)); imag(spm_vec(obj.DCM.xY.y))];
 
             % [m, V, D, logL, iter, sigma2, allm] 
             [obj.X, obj.CP, obj.D, obj.F,~,~,obj.allp] = fitVariationalLaplaceThermo(y, fun, x0, V, maxit, 1e-6);
