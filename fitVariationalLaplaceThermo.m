@@ -101,7 +101,12 @@ for iter = 1:maxIter
     D = diag(diag(H_elbo) - sum(V.^2, 2));
     
     % Update mean using preconditioned CG
-    L = chol(H_elbo, 'lower'); % Ensure positive definiteness
+    try
+        L = chol(H_elbo, 'lower'); % Ensure positive definiteness
+    catch
+        L = chol(makeposdef(H_elbo), 'lower'); % Ensure positive definiteness
+    end
+
     dm = L' \ (L \ g_elbo); % Solve using Cholesky decomposition
 
     %dm = pcg(H_elbo, g_elbo, 1e-6, 100);
@@ -117,6 +122,14 @@ for iter = 1:maxIter
     allloglike = [allloglike logL_likelihood];
     alllogprior = [alllogprior logL_prior];
     all_elbo = [all_elbo logL];
+
+    % Adaptive step-size: backtrack if ELBO gets worse
+    if iter > 1 && all_elbo(end) < all_elbo(end-1)
+        fprintf('ELBO decreased. Dampening step...\n');
+        dm = dm * 0.5;  % Reduce step size
+        m = m - dm;     % Revert previous update
+        m = m + dm * 0.25; % Try smaller update instead
+    end
 
     % Show
     w = 1:length(y);   % x vals
@@ -200,8 +213,18 @@ end
 
 function K = computeSmoothCovariance(x, lengthScale)
     n = length(x);
+    xx = x;
+
+
+    x = real(x);
     K = exp(-pdist2(x(:), x(:)).^2 / (2 * lengthScale^2));
     K = K + 1e-6 * eye(n); % Regularization for numerical stability
+
+    %x = imag(xx);
+    %Kx = exp(-pdist2(x(:), x(:)).^2 / (2 * lengthScale^2));
+    %K = Kx + 1e-6 * eye(n); % Regularization for numerical stability
+
+
 end
 
 
