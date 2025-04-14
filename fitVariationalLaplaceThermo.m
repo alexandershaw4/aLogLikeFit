@@ -38,6 +38,8 @@ function [m, V, D, logL, iter, sigma2, allm] = fitVariationalLaplaceThermo(y, f,
 %
 % AS2025
 
+plots = 0;
+
 % Initialization
 m = m0(:);
 n = length(y);
@@ -67,7 +69,9 @@ allloglike = [];
 alllogprior = [];
 all_elbo = [];
 
-fw = figure('position',[570,659,1740,649]);
+if plots
+    fw = figure('position',[570,659,1740,649]);
+end
 
 for iter = 1:maxIter
     % Predictions and residuals
@@ -102,12 +106,13 @@ for iter = 1:maxIter
     
     % Update mean using preconditioned CG
     try
-        L = chol(H_elbo, 'lower'); % Ensure positive definiteness
+        L = chol(H_elbo, 'lower');
+        dm = L' \ (L \ g_elbo);
     catch
-        L = chol(makeposdef(H_elbo), 'lower'); % Ensure positive definiteness
+        warning('Cholesky failed. Falling back to regularised solve.');
+        %dm = linsolve(H_elbo + eye(size(H_elbo)) * 1e-6, g_elbo, struct('SYM', true));
+        [dm, flag] = pcg(H_elbo + eye(size(H_elbo)) * 1e-6, g_elbo, 1e-6, 100);
     end
-
-    dm = L' \ (L \ g_elbo); % Solve using Cholesky decomposition
 
     %dm = pcg(H_elbo, g_elbo, 1e-6, 100);
     m  = m + dm;
@@ -135,71 +140,73 @@ for iter = 1:maxIter
     w = 1:length(y);   % x vals
     y_pred_new = f(m); % Updated predictions
   
+    if plots
 
     % Create a tiled layout for cleaner subplot spacing
     figure(fw); clf;
     t = tiledlayout(2,4, 'TileSpacing', 'compact', 'Padding', 'compact');
 
-    % --- Main model fit plot ---
-    nexttile([1 4]);
-    hold on;
-    errorbar(w, y, sqrt(sigma2), 'k.', 'DisplayName', 'Observed ±σ', 'CapSize', 0);
-    plot(w, y, 'k', 'LineWidth', 1, 'DisplayName', 'Observed Mean');
-    plot(w, y_pred, '--', 'Color', [0 0.4 1], 'LineWidth', 1.5, 'DisplayName', 'Previous Prediction');
-    plot(w, y_pred_new, '-', 'Color', [0.8 0 0], 'LineWidth', 2, 'DisplayName', 'Current Prediction');
-    plot(w, sqrt(sigma2), '-', 'Color', [0.1 0.6 0.1], 'LineWidth', 1.5, 'DisplayName', 'Heteroscedastic σ');
-    hold off;
+        % --- Main model fit plot ---
+        nexttile([1 4]);
+        hold on;
+        errorbar(w, y, sqrt(sigma2), 'k.', 'DisplayName', 'Observed ±σ', 'CapSize', 0);
+        plot(w, y, 'k', 'LineWidth', 1, 'DisplayName', 'Observed Mean');
+        plot(w, y_pred, '--', 'Color', [0 0.4 1], 'LineWidth', 1.5, 'DisplayName', 'Previous Prediction');
+        plot(w, y_pred_new, '-', 'Color', [0.8 0 0], 'LineWidth', 2, 'DisplayName', 'Current Prediction');
+        plot(w, sqrt(sigma2), '-', 'Color', [0.1 0.6 0.1], 'LineWidth', 1.5, 'DisplayName', 'Heteroscedastic σ');
+        hold off;
+    
+        title('Model Fit: Variational Laplace with Heteroscedastic Variance', 'FontWeight', 'bold');
+        xlabel('Data Index');
+        ylabel('Value');
+        legend('Location', 'best');
+        grid on;
+        box on;
+    
+        % Define common style
+        lineColor = [1 0.7 0.7];
+        scatterColor = 'k';
+        scatterSize = 30;
+        lineWidth = 2;
+    
+        % --- Entropy ---
+        nexttile;
+        plot(1:iter, allentropy, 'Color', lineColor, 'LineWidth', lineWidth); hold on;
+        scatter(1:iter, allentropy, scatterSize, scatterColor, 'filled'); hold off;
+        title('Entropy', 'FontWeight', 'bold');
+        xlabel('Iteration');
+        grid on; box on;
+    
+        % --- Log-likelihood ---
+        nexttile;
+        plot(1:iter, allloglike, 'Color', lineColor, 'LineWidth', lineWidth); hold on;
+        scatter(1:iter, allloglike, scatterSize, scatterColor, 'filled'); hold off;
+        title('Log-Likelihood', 'FontWeight', 'bold');
+        xlabel('Iteration');
+        grid on; box on;
+    
+        % --- Log-prior ---
+        nexttile;
+        plot(1:iter, alllogprior, 'Color', lineColor, 'LineWidth', lineWidth); hold on;
+        scatter(1:iter, alllogprior, scatterSize, scatterColor, 'filled'); hold off;
+        title('Log-Prior', 'FontWeight', 'bold');
+        xlabel('Iteration');
+        grid on; box on;
+    
+        % --- ELBO ---
+        nexttile;
+        plot(1:iter, all_elbo, 'Color', lineColor, 'LineWidth', lineWidth); hold on;
+        scatter(1:iter, all_elbo, scatterSize, scatterColor, 'filled'); hold off;
+        title('ELBO', 'FontWeight', 'bold');
+        xlabel('Iteration');
+        grid on; box on;
+    
+        % Optional: use a nicer colormap or export-friendly background
+        set(gcf, 'Color', 'w'); % White background for saving/export
+        set(findall(gcf,'-property','FontSize'),'FontSize',18);
+        drawnow;
 
-    title('Model Fit: Variational Laplace with Heteroscedastic Variance', 'FontWeight', 'bold');
-    xlabel('Data Index');
-    ylabel('Value');
-    legend('Location', 'best');
-    grid on;
-    box on;
-
-    % Define common style
-    lineColor = [1 0.7 0.7];
-    scatterColor = 'k';
-    scatterSize = 30;
-    lineWidth = 2;
-
-    % --- Entropy ---
-    nexttile;
-    plot(1:iter, allentropy, 'Color', lineColor, 'LineWidth', lineWidth); hold on;
-    scatter(1:iter, allentropy, scatterSize, scatterColor, 'filled'); hold off;
-    title('Entropy', 'FontWeight', 'bold');
-    xlabel('Iteration');
-    grid on; box on;
-
-    % --- Log-likelihood ---
-    nexttile;
-    plot(1:iter, allloglike, 'Color', lineColor, 'LineWidth', lineWidth); hold on;
-    scatter(1:iter, allloglike, scatterSize, scatterColor, 'filled'); hold off;
-    title('Log-Likelihood', 'FontWeight', 'bold');
-    xlabel('Iteration');
-    grid on; box on;
-
-    % --- Log-prior ---
-    nexttile;
-    plot(1:iter, alllogprior, 'Color', lineColor, 'LineWidth', lineWidth); hold on;
-    scatter(1:iter, alllogprior, scatterSize, scatterColor, 'filled'); hold off;
-    title('Log-Prior', 'FontWeight', 'bold');
-    xlabel('Iteration');
-    grid on; box on;
-
-    % --- ELBO ---
-    nexttile;
-    plot(1:iter, all_elbo, 'Color', lineColor, 'LineWidth', lineWidth); hold on;
-    scatter(1:iter, all_elbo, scatterSize, scatterColor, 'filled'); hold off;
-    title('ELBO', 'FontWeight', 'bold');
-    xlabel('Iteration');
-    grid on; box on;
-
-    % Optional: use a nicer colormap or export-friendly background
-    set(gcf, 'Color', 'w'); % White background for saving/export
-    set(findall(gcf,'-property','FontSize'),'FontSize',18);
-    drawnow;
-
+    end
     
     % Convergence check
     if norm(dm) < tol
