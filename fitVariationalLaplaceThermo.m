@@ -38,7 +38,8 @@ function [m, V, D, logL, iter, sigma2, allm] = fitVariationalLaplaceThermo(y, f,
 %
 % AS2025
 
-plots = 0;
+plots = 1;
+thresh = 1/16;
 
 % Initialization
 m = m0(:);
@@ -138,11 +139,53 @@ for iter = 1:maxIter
     logL_entropy = 0.5 * sum(log(diag(D) + 1e-6));
     logL_prior = -0.5 * ((m - m0)' * H_prior * (m - m0));
     logL = logL_likelihood + logL_prior + logL_entropy;
+
+    % Backtrack if ELBO decreased
+    if iter > 1 && logL < all_elbo(end)
+        fprintf('ELBO decreased. Initiating backtracking...\n');
+        success = false;
+        stepScale = 0.5;
+        maxTries = 10;
+        attempt = 0;
+        m_trial = m_prev;
+        while ~success && attempt < maxTries
+            attempt = attempt + 1;
+            m_trial = m_prev + stepScale^attempt * dm;
+
+            y_pred_trial = f(m_trial);
+            residuals_trial = y - y_pred_trial;
+            sigma2_trial = max(epsilon, (residuals_trial.^2 + beta) ./ (nu + residuals_trial.^2 / 2));
+            J_trial = computeJacobian(f, m_trial, n);
+
+            H_trial = J_trial' * diag(1 ./ sigma2_trial) * J_trial + H_prior;
+            logL_likelihood_trial = -0.5 * sum((residuals_trial.^2 ./ sigma2_trial) + log(2 * pi * sigma2_trial));
+            logL_prior_trial = -0.5 * ((m_trial - m0)' * H_prior * (m_trial - m0));
+            logL_entropy_trial = 0.5 * sum(log(diag(H_trial) + 1e-6)); % Approximate
+            logL_trial = logL_likelihood_trial + logL_prior_trial + logL_entropy_trial;
+
+            fprintf('  Attempt %d: scaled step %.4f | ELBO: %.4f\n', attempt, stepScale^attempt, logL_trial);
+
+            if logL_trial > logL
+                success = true;
+                m = m_trial;
+                logL = logL_trial;
+                all_elbo(end) = logL;  % replace last ELBO
+                % Optional: update V and D here too using H_trial if needed
+            end
+        end
+
+        if ~success
+            fprintf('Backtracking failed to improve ELBO. Reverting to previous state.\n');
+            m = m_prev;
+            logL = all_elbo(end);  % revert ELBO
+        end
+    end
    
     allentropy = [allentropy logL_entropy];
     allloglike = [allloglike logL_likelihood];
     alllogprior = [alllogprior logL_prior];
     all_elbo = [all_elbo logL];
+    
 
     if iter == 1 || logL > best_elbo
         best_elbo = logL;
@@ -231,7 +274,7 @@ for iter = 1:maxIter
     end
     
     % Convergence check
-    if norm(dm) < tol || norm( (y - y_pred_new).^2 ) <= (.25)
+    if norm(dm) < tol || norm( (y - y_pred_new).^2 ) <= (thresh)
         fprintf('Converged at iteration %d\n', iter);
         return;
     end
@@ -242,12 +285,15 @@ for iter = 1:maxIter
     %    m = m_prev + 0.25 * dm;  % Take smaller step
     %end
 
-    if iter > 1 && all_elbo(end) < all_elbo(end-1)
-        fprintf('ELBO decreased. Dampening step...\n');
-        dm = dm * 0.5;  % Reduce step size
-        m = m - dm;     % Revert previous update
-        m = m + dm * 0.25; % Try smaller update instead
-    end
+    
+
+
+    % if iter > 1 && all_elbo(end) < all_elbo(end-1)
+    %     fprintf('ELBO decreased. Dampening step...\n');
+    %     dm = dm * 0.5;  % Reduce step size
+    %     m = m - dm;     % Revert previous update
+    %     m = m + dm * 0.25; % Try smaller update instead
+    % end
     
     fprintf('Iter: %d | ELBO: %.4f | ||dm||: %.4f\n', iter, logL, norm(dm));
 end
