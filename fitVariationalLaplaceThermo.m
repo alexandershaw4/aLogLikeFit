@@ -104,17 +104,33 @@ for iter = 1:maxIter
     V = U(:, 1:k) * sqrt(Sval(1:k, 1:k));
     D = diag(diag(H_elbo) - sum(V.^2, 2));
     
-    % Update mean using preconditioned CG
+    % Update  using preconditioned CG
     try
         L = chol(H_elbo, 'lower');
         dm = L' \ (L \ g_elbo);
     catch
-        warning('Cholesky failed. Falling back to regularised solve.');
+        fprintf('Cholesky failed. Falling back to regularised solve.\n');
         %dm = linsolve(H_elbo + eye(size(H_elbo)) * 1e-6, g_elbo, struct('SYM', true));
-        [dm, flag] = pcg(H_elbo + eye(size(H_elbo)) * 1e-6, g_elbo, 1e-6, 100);
+        [dm,flag,relres] = pcg(H_elbo + eye(size(H_elbo)) * 1e-6, g_elbo, 1e-6, 100);
+
+        if flag ~= 0 || relres > 1e-2  % Conservative threshold
+            fprintf('PCG failed to converge or result is unreliable (relres = %.2e). Reverting update.\n', relres);
+            dm = zeros(size(m));  % Or damp it heavily
+        end
+        
+        % dampen so it doesn't run away
+        alpha = min(1, 1 / (1 + norm(dm)));
+        dm = alpha * dm;
+    end
+
+    % trust region style dampening
+    maxStepSize = 1.0;
+    if norm(dm) > maxStepSize
+        dm = dm * (maxStepSize / norm(dm));
     end
 
     %dm = pcg(H_elbo, g_elbo, 1e-6, 100);
+    m_prev = m; 
     m  = m + dm;
     allm = [allm m(:)];
     
@@ -128,13 +144,19 @@ for iter = 1:maxIter
     alllogprior = [alllogprior logL_prior];
     all_elbo = [all_elbo logL];
 
-    % Adaptive step-size: backtrack if ELBO gets worse
-    if iter > 1 && all_elbo(end) < all_elbo(end-1)
-        fprintf('ELBO decreased. Dampening step...\n');
-        dm = dm * 0.5;  % Reduce step size
-        m = m - dm;     % Revert previous update
-        m = m + dm * 0.25; % Try smaller update instead
+    if iter == 1 || logL > best_elbo
+        best_elbo = logL;
+        m_best = m;
+        V_best = V;
+        D_best = D;
     end
+
+    % if iter > 1 && all_elbo(end) < all_elbo(end-1)
+    %     fprintf('ELBO decreased. Dampening step...\n');
+    %     dm = dm * 0.5;  % Reduce step size
+    %     m = m - dm;     % Revert previous update
+    %     m = m + dm * 0.25; % Try smaller update instead
+    % end
 
     % Show
     w = 1:length(y);   % x vals
@@ -209,13 +231,34 @@ for iter = 1:maxIter
     end
     
     % Convergence check
-    if norm(dm) < tol
+    if norm(dm) < tol || norm( (y - y_pred_new).^2 ) <= (.25)
         fprintf('Converged at iteration %d\n', iter);
-        break;
+        return;
+    end
+
+    % Adaptive step-size: backtrack if ELBO gets worse
+    %if iter > 1 && all_elbo(end) < all_elbo(end-1)
+    %    fprintf('ELBO decreased. Backtracking step...\n');
+    %    m = m_prev + 0.25 * dm;  % Take smaller step
+    %end
+
+    if iter > 1 && all_elbo(end) < all_elbo(end-1)
+        fprintf('ELBO decreased. Dampening step...\n');
+        dm = dm * 0.5;  % Reduce step size
+        m = m - dm;     % Revert previous update
+        m = m + dm * 0.25; % Try smaller update instead
     end
     
     fprintf('Iter: %d | ELBO: %.4f | ||dm||: %.4f\n', iter, logL, norm(dm));
 end
+
+% return best fits
+fprintf('Returning best fits...\n');
+m = m_best; 
+V = V_best; 
+D = D_best;
+logL = best_elbo;
+
 end
 
 function K = computeSmoothCovariance(x, lengthScale)
@@ -249,48 +292,3 @@ parfor i = 1:n
 end
 end
 
-% function J = computeJacobianAD(f, x)
-%     x_dl = dlarray(x);  % Convert to differentiable dlarray
-%     y_dl = f(x_dl);     % Ensure f(x) outputs a scalar or element-wise function
-%     J_dl = dlgradient(sum(y_dl), x_dl); % Compute gradient
-%     J = extractdata(J_dl); % Convert back to normal MATLAB array
-% end
-
-    % % Plot observed data, predictions, and variance
-    % figure(fw); clf;
-    % subplot(2,4,[1:4]);
-    % errorbar(w, y, sqrt(sigma2), 'k.', 'DisplayName', 'Observed (±σ)'); % Observed data with variance
-    % hold on;
-    % plot(w, y, 'k', 'LineWidth', 1, 'DisplayName', 'Observed (Mu)');
-    % plot(w, y_pred, 'b--', 'LineWidth', 1.5, 'DisplayName', 'Previous Prediction');
-    % plot(w, y_pred_new, 'r-', 'LineWidth', 2, 'DisplayName', 'Current Prediction');
-    % plot(w, sqrt(sigma2), 'g-', 'LineWidth', 1.5, 'DisplayName', 'Heteroscedastic σ'); % Variance curve
-    % hold off;
-    % title('Model Fit: Variational Laplace with Heteroscedastic Variance');
-    % xlabel('Data Index');
-    % ylabel('Value');
-    % legend('Location', 'best');
-    % grid on;
-    % 
-    % subplot(2,4,5);
-    % plot(1:iter,allentropy,'Color',[1 .7 .7],'linewidth',3); hold on;
-    % scatter(1:iter,allentropy,30,'k','filled');grid on; hold off;
-    % title('entropy');
-    % 
-    % subplot(2,4,6);
-    % plot(1:iter,allloglike,'Color',[1 .7 .7],'linewidth',3); hold on;
-    % scatter(1:iter,allloglike,30,'k','filled');grid on; hold off;
-    % title('log likeihood');
-    % 
-    % subplot(2,4,7);
-    % plot(1:iter,alllogprior,'Color',[1 .7 .7],'linewidth',3); hold on;
-    % scatter(1:iter,alllogprior,30,'k','filled');grid on; hold off;
-    % title('log prior');
-    % 
-    % subplot(2,4,8);
-    % plot(1:iter,all_elbo,'Color',[1 .7 .7],'linewidth',3); hold on;
-    % scatter(1:iter,all_elbo,30,'k','filled');grid on; hold off;
-    % title('elbo');
-    % 
-    % drawnow;
-    % 
