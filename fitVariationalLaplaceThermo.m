@@ -38,7 +38,7 @@ function [m, V, D, logL, iter, sigma2, allm] = fitVariationalLaplaceThermo(y, f,
 %
 % AS2025
 
-plots = 1;
+plots = 0;
 thresh = 1/16;
 
 % Initialization
