@@ -27,7 +27,7 @@ M.Ep
 M.CP
 M.F
 
-![image](/other/error_map_.png)
+![image](/other/error_map.png)
 
 
 Next, extract the individual posterior parameter means and variances and employ Parametric Empirical Bayes using peb_ard_with_stats_var.m
