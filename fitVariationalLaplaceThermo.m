@@ -1,4 +1,4 @@
-function [m, V, D, logL, iter, sigma2, allm] = fitVariationalLaplaceThermo(y, f, m0, S0, maxIter, tol)
+function [m, V, D, logL, iter, sigma2, allm] = fitVariationalLaplaceThermo(y, f, m0, S0, maxIter, tol,plots)
 % Extended Variational Laplace with Low-Rank Approximation, Smarter Variance 
 % Updates, and Thermodynamic Integration. Non extended version is fitVariationalLaplace.
 %
@@ -38,7 +38,10 @@ function [m, V, D, logL, iter, sigma2, allm] = fitVariationalLaplaceThermo(y, f,
 %
 % AS2025
 
-plots = 0;
+if nargin < 7 || isempty(plots);
+    plots = 1;
+end
+
 thresh = 1/16;
 
 % Initialization

@@ -27,6 +27,9 @@ M.Ep
 M.CP
 M.F
 
+![image](other/error_map_.png)
+
+
 Next, extract the individual posterior parameter means and variances and employ Parametric Empirical Bayes using peb_ard_with_stats_var.m
 
 These functions implement a Parametric Empirical Bayes (PEB) method for estimating group-level parameters while incorporating individual-level priors. The 

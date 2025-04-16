@@ -303,10 +303,14 @@ classdef aFitDCM < handle
 
         end
 
-        function aloglikVLtherm(obj,maxit)
+        function aloglikVLtherm(obj,maxit,plots)
 
-            if nargin < 2; 
+            if nargin < 2 || isempty(maxit)
                 maxit = 32;
+            end
+
+            if nargin < 3
+                plots = 1;
             end
 
             %fun = @(P,M) spm_vec(obj.DCM.M.IS(spm_unvec(P,obj.DCM.M.pE),obj.DCM.M,obj.DCM.xU));
@@ -320,19 +324,21 @@ classdef aFitDCM < handle
             y  = spm_vec(obj.DCM.xY.y);%[real(spm_vec(obj.DCM.xY.y)); imag(spm_vec(obj.DCM.xY.y))];
 
             % [m, V, D, logL, iter, sigma2, allm] 
-            [obj.X, obj.CP, obj.D, obj.F,~,~,obj.allp] = fitVariationalLaplaceThermo(y, fun, x0, V, maxit, 1e-6);
+            [obj.X, obj.CP, obj.D, obj.F,~,~,obj.allp] = fitVariationalLaplaceThermo(y, fun, x0, V, maxit, 1e-6,plots);
             %[obj.X, obj.CP, obj.F] = fitVariationalLaplaceThermo4thOrder(y, fun, x0, V, maxit, 1e-6);
             %[obj.X, obj.CP, obj.F] = fitVariationalLaplaceNF(y, fun, x0, V, maxit, 1e-6);
 
             [~, P] = fun(spm_vec(obj.X));
             obj.Ep = spm_unvec(spm_vec(P),obj.DD.M.pE);
+            obj.V = obj.CP;
             obj.CP = obj.CP * obj.CP' + obj.D;
+            
 
         end
 
         function fitRL(obj,maxit)
 
-            if nargin < 2; 
+            if nargin < 2 
                 maxit = 100;
             end
 
