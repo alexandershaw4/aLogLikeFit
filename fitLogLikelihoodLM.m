@@ -1,4 +1,4 @@
-function [x_est, logL, iter, CP] = fitLogLikelihoodLM(y, f, x0, prior_variances, sigma, maxIter, tol, lambda0)
+function [x_est, logL, iter, CP, allx] = fitLogLikelihoodLM(y, f, x0, prior_variances, sigma, maxIter, tol, lambda0)
 % Parameter estimation using log-likelihood optimisation with Levenberg-Marquardt.
 %
 % This function estimates model parameters by maximising the log-likelihood
@@ -31,6 +31,7 @@ figure('position',[888   744   847   564]);
 
 y_pred = f(x);
 residuals = y - y_pred;
+allx = x(:);
 
 fprintf('Initialise\n');
 fprintf('It: %d | sse = %d\n',0,sum(residuals.^2));
@@ -83,6 +84,8 @@ for iter = 1:maxIter
     end
 
     fprintf('It: %d | sse = %d | logLik = %d\n',iter,sum(residuals.^2),logL_new);
+
+    allx = [allx x(:)];
 
     % Show
     w = 1:length(y);

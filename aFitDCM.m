@@ -32,6 +32,7 @@ classdef aFitDCM < handle
         iS
         D
         allp
+        histp
     end
     
     methods
@@ -44,6 +45,13 @@ classdef aFitDCM < handle
             % to the optimimser
             try obj.hist = [obj.hist; obj.history];
             catch obj.hist = obj.history;
+            end
+
+            try obj.hist = [obj.hist {obj.allp}];
+            catch
+                try obj.hist = {obj.allp};
+                
+                end
             end
         end
         
@@ -270,7 +278,7 @@ classdef aFitDCM < handle
 
             %[x_est, logL, iter] = fitLogLikelihoodGN(y, fun, x0, sigma, maxit, 1e-6);
 
-            [obj.X, obj.F, iter,obj.CP] = fitLogLikelihoodLM(y, fun, x0, V, sigma, maxit, 1e-6, 0.1);
+            [obj.X, obj.F, iter,obj.CP,obj.allp] = fitLogLikelihoodLM(y, fun, x0, V, sigma, maxit, 1e-6, 0.1);
 
 
             [~, P] = fun(spm_vec(obj.X));
@@ -325,6 +333,39 @@ classdef aFitDCM < handle
 
             % [m, V, D, logL, iter, sigma2, allm] 
             [obj.X, obj.CP, obj.D, obj.F,~,~,obj.allp] = fitVariationalLaplaceThermo(y, fun, x0, V, maxit, 1e-6,plots);
+            %[obj.X, obj.CP, obj.F] = fitVariationalLaplaceThermo4thOrder(y, fun, x0, V, maxit, 1e-6);
+            %[obj.X, obj.CP, obj.F] = fitVariationalLaplaceNF(y, fun, x0, V, maxit, 1e-6);
+
+            [~, P] = fun(spm_vec(obj.X));
+            obj.Ep = spm_unvec(spm_vec(P),obj.DD.M.pE);
+            obj.V = obj.CP;
+            obj.CP = obj.CP * obj.CP' + obj.D;
+            
+
+        end
+
+        function aloglikVLtherm_radialprecision(obj,maxit,plots)
+
+            if nargin < 2 || isempty(maxit)
+                maxit = 32;
+            end
+
+            if nargin < 3
+                plots = 1;
+            end
+
+            %fun = @(P,M) spm_vec(obj.DCM.M.IS(spm_unvec(P,obj.DCM.M.pE),obj.DCM.M,obj.DCM.xU));
+
+            x0  = obj.opts.x0(:);
+            fun = @(varargin)obj.wrapdm(varargin{:});
+
+            %x0 = spm_vec(obj.DCM.M.pE);
+            M  = obj.DCM.M;
+            V  = diag(obj.opts.V );
+            y  = spm_vec(obj.DCM.xY.y);%[real(spm_vec(obj.DCM.xY.y)); imag(spm_vec(obj.DCM.xY.y))];
+
+            % [m, V, D, logL, iter, sigma2, allm] 
+            [obj.X, obj.CP, obj.D, obj.F,~,~,obj.allp] = fitVariationalLaplaceThermoRadialPrecision(y, fun, x0, V, maxit, 1e-6,plots);
             %[obj.X, obj.CP, obj.F] = fitVariationalLaplaceThermo4thOrder(y, fun, x0, V, maxit, 1e-6);
             %[obj.X, obj.CP, obj.F] = fitVariationalLaplaceNF(y, fun, x0, V, maxit, 1e-6);
 
