@@ -344,7 +344,7 @@ classdef aFitDCM < handle
 
         end
 
-        function aloglikVLtherm_radialprecision(obj,maxit,plots)
+        function aloglikVLtherm_cov(obj,maxit,plots)
 
             if nargin < 2 || isempty(maxit)
                 maxit = 32;
@@ -365,7 +365,7 @@ classdef aFitDCM < handle
             y  = spm_vec(obj.DCM.xY.y);%[real(spm_vec(obj.DCM.xY.y)); imag(spm_vec(obj.DCM.xY.y))];
 
             % [m, V, D, logL, iter, sigma2, allm] 
-            [obj.X, obj.CP, obj.D, obj.F,~,~,obj.allp] = fitVariationalLaplaceThermoRadialPrecision(y, fun, x0, V, maxit, 1e-6,plots);
+            [obj.X, obj.CP, obj.D, obj.F,~,~,obj.allp] = fitVL_LowRankNoise(y, fun, x0, V, maxit, 1e-6,plots);
             %[obj.X, obj.CP, obj.F] = fitVariationalLaplaceThermo4thOrder(y, fun, x0, V, maxit, 1e-6);
             %[obj.X, obj.CP, obj.F] = fitVariationalLaplaceNF(y, fun, x0, V, maxit, 1e-6);
 
