@@ -33,6 +33,7 @@ classdef aFitDCM < handle
         D
         allp
         histp
+        VV
     end
     
     methods
@@ -332,15 +333,24 @@ classdef aFitDCM < handle
             y  = spm_vec(obj.DCM.xY.y);%[real(spm_vec(obj.DCM.xY.y)); imag(spm_vec(obj.DCM.xY.y))];
 
             % [m, V, D, logL, iter, sigma2, allm] 
-            [obj.X, obj.CP, obj.D, obj.F,~,~,obj.allp] = fitVariationalLaplaceThermo(y, fun, x0, V, maxit, 1e-6,plots);
+            [obj.X, obj.VV, obj.D, obj.F,~,~,obj.allp] = fitVariationalLaplaceThermo(y, fun, x0, V, maxit, 1e-6,plots);
             %[obj.X, obj.CP, obj.F] = fitVariationalLaplaceThermo4thOrder(y, fun, x0, V, maxit, 1e-6);
             %[obj.X, obj.CP, obj.F] = fitVariationalLaplaceNF(y, fun, x0, V, maxit, 1e-6);
 
             [~, P] = fun(spm_vec(obj.X));
             obj.Ep = spm_unvec(spm_vec(P),obj.DD.M.pE);
-            obj.V = obj.CP;
-            obj.CP = obj.CP * obj.CP' + obj.D;
+            %obj.V = obj.CP;
+            %obj.CP = obj.CP * obj.CP' + obj.D;
             
+            %V = obj.VV;
+            
+            obj.CP = pinv( (obj.VV*obj.VV') + obj.D);
+
+            % Ainv = diag(1 ./ diag(obj.D));
+            % M = eye(size(V,2)) + V' * Ainv * V;
+            % invM = inv(M);  % small matrix
+            % obj.CP = Ainv - Ainv * V * invM * V' * Ainv;
+
 
         end
 
@@ -365,15 +375,24 @@ classdef aFitDCM < handle
             y  = spm_vec(obj.DCM.xY.y);%[real(spm_vec(obj.DCM.xY.y)); imag(spm_vec(obj.DCM.xY.y))];
 
             % [m, V, D, logL, iter, sigma2, allm] 
-            [obj.X, obj.CP, obj.D, obj.F,~,~,obj.allp] = fitVL_LowRankNoise(y, fun, x0, V, maxit, 1e-6,plots);
+            [obj.X, obj.VV, obj.D, obj.F,~,~,obj.allp] = fitVL_LowRankNoise(y, fun, x0, V, maxit, 1e-6,plots);
             %[obj.X, obj.CP, obj.F] = fitVariationalLaplaceThermo4thOrder(y, fun, x0, V, maxit, 1e-6);
             %[obj.X, obj.CP, obj.F] = fitVariationalLaplaceNF(y, fun, x0, V, maxit, 1e-6);
 
             [~, P] = fun(spm_vec(obj.X));
             obj.Ep = spm_unvec(spm_vec(P),obj.DD.M.pE);
-            obj.V = obj.CP;
-            obj.CP = obj.CP * obj.CP' + obj.D;
+
+            obj.CP = pinv( (obj.VV*obj.VV') + obj.D);
+
+           % obj.V = obj.CP;
+           % obj.CP = obj.CP * obj.CP' + obj.D;
             
+            % V = obj.VV;
+            % 
+            % Ainv = diag(1 ./ diag(obj.D));
+            % M = eye(size(V,2)) + V' * Ainv * V;
+            % invM = inv(M);  % small matrix
+            % obj.CP = Ainv - Ainv * V * invM * V' * Ainv;
 
         end
 

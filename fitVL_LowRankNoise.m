@@ -21,7 +21,15 @@ D_post = diag(diag(S0) - sum(V_post.^2, 2));
 
 % Initial observation noise structure: Sigma = U_noise*U_noise^T + D_noise
 k_noise = min(n, 10);
-U_noise = randn(n, k_noise) * 0.1;
+%U_noise = randn(n, k_noise) * 0.1;
+R_init = y - f(m0);
+%[U_init, ~, ~] = svd(R_init * ones(1, k_noise), 'econ');
+k = radialPD(R_init,2);
+kern   = k*diag(R_init)*k'; 
+[U_init, ~, ~] = svd(kern);
+%[U_init] = atcm.fun.agauss_smooth_mat(R_init,2);U_init=U_init';
+U_noise = U_init(:, 1:k_noise) * 0.1;
+
 D_noise = 0.1 * ones(n,1);
 epsilon = 1e-6;
 beta = 1e-3;
@@ -90,7 +98,13 @@ for iter = 1:maxIter
     % Update observation noise structure using factor analysis-style update
     E2 = residuals.^2;
     D_noise = 0.9 * D_noise + 0.1 * max(E2 - sum(U_noise.^2,2), epsilon);
-    U_noise = 0.9 * U_noise + 0.1 * (residuals * randn(1, k_noise));
+    k = radialPD(residuals,2);
+    kern = k*diag(residuals)*k';
+    [U_new, ~, ~] = svd(kern);
+
+    %[U_new, ~, ~] = svd(residuals * ones(1, k_noise), 'econ');
+    U_noise = 0.9 * U_noise + 0.1 * U_new(:, 1:k_noise);
+    %U_noise = 0.9 * U_noise + 0.1 * (residuals * randn(1, k_noise));
 
     if plots
         figure(fw); clf;

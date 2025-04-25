@@ -9,6 +9,8 @@ Brief guide -->
 
 Fit a spectral neural mass model, specified using the DCM conventional structure (DCM with DCM.M.pE, DCM.M.pC,DCM.M.f, DCM.M.IS and DCM.xY specified).
 
+![image](/other/shot.png)
+
 Usage:
 
 Given a fully specified DCM, do:
