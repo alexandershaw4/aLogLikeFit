@@ -1,7 +1,94 @@
-% Modified Variational Laplace with Low-Rank Observation Covariance
-% Extension of original fitVariationalLaplaceThermo.m
-
 function [m, V_post, D_post, logL, iter, Sigma_struct, allm] = fitVL_LowRankNoise(y, f, m0, S0, maxIter, tol, plots)
+% Extended Variational Laplace with Low-Rank Observation Covariance
+% ================================================================
+% 
+% This routine extends the basic fitVariationalLaplaceThermo approach
+% by incorporating a **low-rank model of heteroscedastic observation noise** 
+% (i.e., structured and adaptive noise covariance across observations).
+%
+% The method fits dynamical systems models of the form:
+%          y = f(m) + e
+% where e ~ N(0, Sigma), with Sigma estimated adaptively during inference.
+%
+% It estimates a **Gaussian variational posterior** over the latent 
+% variables, refining its mean and covariance structure by optimizing a 
+% variational free-energy bound (the ELBO).
+%
+% The posterior covariance is approximated using a **low-rank plus diagonal structure**:
+%          S ≈ V * Vᵀ + D
+% where:
+% - V captures **low-dimensional correlations** between parameters,
+% - D captures **individual parameter variances** (diagonal noise).
+%
+% The **observation noise covariance** Sigma is also modeled as:
+%          Sigma ≈ U * Uᵀ + diag(D_noise)
+% and updated during inference based on model residuals.
+%
+%
+% Key Features
+% ------------
+% - **Low-Rank Posterior Approximation**:
+%   Efficient low-rank decomposition of the posterior precision matrix,
+%   avoiding full covariance estimation in high dimensions.
+%
+% - **Smarter Observation Variance Updates**:
+%   The observation noise is heteroscedastic and low-rank correlated, 
+%   with both the diagonal variances and low-rank factors adapting to the model residuals.
+%
+% - **Thermodynamic Integration**:
+%   Annealed free energy (ELBO) estimates support thermodynamic evidence computations.
+%
+% - **Smooth Structured Noise Modeling**:
+%   Observation noise is regularized by smoothing residuals via radial basis functions
+%   (radialPD), capturing local structure rather than treating noise as purely random.
+%
+%
+% Usage
+% -----
+% [m, V, D, logL, iter, Sigma_struct, allm] = fitVL_LowRankNoise(y, f, m0, S0, maxIter, tol, plots)
+%
+%
+% Inputs
+% ------
+%   y         : Observed data vector (n x 1)
+%   f         : Model function handle (f(m) returns predicted data)
+%   m0        : Initial mean of the variational distribution (d x 1)
+%   S0        : Initial covariance of the variational distribution (d x d)
+%   maxIter   : Maximum number of optimization iterations
+%   tol       : Convergence tolerance on the mean update ||dm||
+%   plots     : Whether to produce diagnostic plots (1 = yes, 0 = no)
+%
+%
+% Outputs
+% -------
+%   m          : Optimized mean of the variational posterior
+%   V, D       : Low-rank decomposition of the posterior precision matrix 
+%                (approximate S ≈ V * Vᵀ + D)
+%   logL       : Final value of the variational free energy (ELBO)
+%   iter       : Number of iterations performed
+%   Sigma_struct : Struct containing the final low-rank observation noise factors (U, D_noise)
+%   allm       : Evolution of the mean estimate across iterations
+%
+%
+% Notes
+% -----
+% - The final posterior covariance can be recovered approximately via the 
+%   Woodbury formula if needed:
+%       Sigma_q ≈ inv(D) - inv(D) * V * inv(I + Vᵀ * inv(D) * V) * Vᵀ * inv(D)
+%
+% - although you'll get pretty close with:
+%       Sigma_q = inv( V*V' + D)
+%
+% - The evolving observation noise structure (Sigma) can capture 
+%   time-varying or locally correlated observation noise, improving robustness
+%   over simple homoscedastic Gaussian noise models.
+%
+% - The smoother (radialPD) regularizes the noise model during learning, ensuring
+%   stability and meaningful low-rank decompositions even with noisy residuals.
+%
+%
+% Developed by AS, 2025
+
 
 if nargin < 7 || isempty(plots)
     plots = 1;
@@ -100,7 +187,7 @@ for iter = 1:maxIter
     D_noise = 0.9 * D_noise + 0.1 * max(E2 - sum(U_noise.^2,2), epsilon);
     k = radialPD(residuals,2);
     kern = k*diag(residuals)*k';
-    [U_new, ~, ~] = svd(kern);
+    [U_new, ~, ~] = svd(kernwi);
 
     %[U_new, ~, ~] = svd(residuals * ones(1, k_noise), 'econ');
     U_noise = 0.9 * U_noise + 0.1 * U_new(:, 1:k_noise);
