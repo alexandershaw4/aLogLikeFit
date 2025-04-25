@@ -1,42 +1,124 @@
-This repository contains a collection of routines for fitting first-level (individual) models in computational psychiatry, specifically spectral DCMs to neurophysiology data. 
-The repository includes several function but key elements include:
+# aLogLikeFit
 
-(1) - fitVariationalLaplaceThermo.m. This is an implementation of Variational Laplace with heterscedastic variance and thermodynamic integration. Like DCM, it optimises the ELBO or free energy and returns posterior means and variances.
+A collection of flexible routines for **first-level and second-level modeling** in computational psychiatry, especially for fitting **spectral DCMs** to neurophysiology data.
 
-(2) - peb_ard_with_stats_var.m. This function performs Parametric Empirical Bayes (PEB) - essentially a second level model posed as an optimisation problem and including second order terms.
+This toolkit includes:
+- **Variational Laplace algorithms** with heteroscedastic noise and thermodynamic integration
+- **Low-rank observation noise modeling**
+- **Parametric Empirical Bayes (PEB)** routines for group-level (second-level) Bayesian inference
 
-Brief guide -->
+---
 
-Fit a spectral neural mass model, specified using the DCM conventional structure (DCM with DCM.M.pE, DCM.M.pC,DCM.M.f, DCM.M.IS and DCM.xY specified).
+## \ud83d\udce6 Main Components
 
-![image](/other/shot.png)
+### 1. Variational Laplace Fitters
+- **`fitVariationalLaplaceThermo.m`**  
+  Classical Variational Laplace with:
+  - Smarter heteroscedastic variance updates
+  - Thermodynamic integration for log-evidence estimation
+  - Optimizes the ELBO (evidence lower bound)
 
-Usage:
+- **`fitVL_LowRankNoise.m`**  
+  Extended version with:
+  - Low-rank plus diagonal modeling of **observation noise covariance**  
+  - Dynamic adaptation of noise structure based on residuals
 
-Given a fully specified DCM, do:
+### 2. Parametric Empirical Bayes (PEB)
+- **`peb_ard_with_stats_var.m`**, **`peb_ard_with_stats.m`**, **`peb_ard_with_stats_LM.m`**
+  - Implements PEB with:
+    - Ridge-like Bayesian regularization
+    - **Automatic Relevance Determination (ARD)** for feature selection
+    - (Optional) **Levenberg-Marquardt (LM)** enhanced optimization for stability
+  - Returns:
+    - Group-level parameter estimates
+    - ARD hyperparameters
+    - t-statistics and p-values
+    - Individual posteriors
 
-M = aFitDCM(DCM); % constructor
-M.aloglikVLtherm; % run routine
+---
 
-% to re-run / add more iterations:
+## \ud83d\ude80 Quickstart Guide
 
-M.update_parameters(M.Ep)
+### Step 1: Fit a First-Level (Individual) Model
+
+Fit a spectral DCM-like model, with fields:  
+`DCM.M.pE`, `DCM.M.pC`, `DCM.M.f`, `DCM.M.IS`, `DCM.xY`
+
+```matlab
+M = aFitDCM(DCM);        % Construct fitting object
+M.aloglikVLtherm;        % Run Variational Laplace with thermodynamic integration
+```
+
+Optionally refine:
+```matlab
+M.update_parameters(M.Ep); 
 M.aloglikVLtherm;
+```
 
-% and to access posteriors:
+Inspect posteriors:
+```matlab
+M.Ep   % Posterior means
+M.CP   % Posterior covariances
+M.F    % Free energy (model evidence)
+```
 
-M.Ep
-M.CP
-M.F
+<div align="center">
+  <img src="https://github.com/alexandershaw4/aLogLikeFit/assets/your-image1.png" width="600">
+</div>
 
-![image](/other/error_map.png)
+---
 
+### Step 2: Group-Level Inference via PEB
 
-Next, extract the individual posterior parameter means and variances and employ Parametric Empirical Bayes using peb_ard_with_stats_var.m
+Extract the individual posteriors, and apply PEB:
 
-These functions implement a Parametric Empirical Bayes (PEB) method for estimating group-level parameters while incorporating individual-level priors. The 
-method combines ridge regression with Bayesian regularisation, using prior covariance information about individual parameters to shrink the group-level 
-estimates. It also includes Automatic Relevance Determination (ARD) to determine the importance of each predictor. The _LM version of the code incorporates the 
-Levenberg-Marquardt (LM) algorithm to optimise the parameter estimation, adjusting the update step to improve convergence and stability.
+```matlab
+% Example usage:
+[beta, lambda_vals, t_stats, p_values, posterior_means, posterior_covs] = peb_ard_with_stats_var(PosteriorMeans, PosteriorCovariances,X,num_iter);
+```
 
-The function returns the group-level parameter estimates, ARD hyperparameters, t-statistics, p-values, and the individual-level posterior means and covariances.
+- `G`: Group mean parameter estimates
+- `H`: ARD hyperparameters
+- `stats`: t-stats, p-values for group parameters
+
+<div align="center">
+  <img src="https://github.com/alexandershaw4/aLogLikeFit/assets/your-image2.png" width="600">
+</div>
+
+---
+
+## \ud83d\udcda Documentation
+
+Each function is documented internally.  
+See:
+- `fitVariationalLaplaceThermo.m` for classical VL
+- `fitVL_LowRankNoise.m` for noise-structured VL
+- `peb_ard_with_stats_var.m` for second-level modeling.
+
+---
+
+## \ud83e\uddd0 Why Use aLogLikeFit?
+
+- Designed for **neurophysiology DCMs** but adaptable to general dynamical system models.
+- Supports **structured noise** \u2014 not just homoscedastic Gaussian assumptions.
+- **Variational + Empirical Bayes** in one lightweight toolbox.
+- Minimal dependencies (pure MATLAB).
+- Well-suited for **small samples** and **hierarchical modeling**.
+
+---
+
+## \ud83d\udd25 Repository Structure
+| File                            | Description |
+|----------------------------------|-------------|
+| `fitVariationalLaplace.m`        | Basic VL optimizer |
+| `fitVariationalLaplaceThermo.m`  | VL + Thermodynamic integration |
+| `fitVL_LowRankNoise.m`           | VL + Low-rank noise covariance |
+| `aFitDCM.m`                      | Simple wrapper for DCM fitting |
+| `peb_ard_with_stats_var.m`       | PEB + ARD (variable noise) |
+| `peb_ard_with_stats_LM.m`        | PEB + ARD + Levenberg-Marquardt |
+
+---
+
+## \ud83d\udce2 Notes
+- MATLAB required (tested with R2020b+).
+- All code \u00a9 Alexander Shaw 2025.
