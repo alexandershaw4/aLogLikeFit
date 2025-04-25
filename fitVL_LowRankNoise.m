@@ -187,7 +187,7 @@ for iter = 1:maxIter
     D_noise = 0.9 * D_noise + 0.1 * max(E2 - sum(U_noise.^2,2), epsilon);
     k = radialPD(residuals,2);
     kern = k*diag(residuals)*k';
-    [U_new, ~, ~] = svd(kernwi);
+    [U_new, ~, ~] = svd(kern);
 
     %[U_new, ~, ~] = svd(residuals * ones(1, k_noise), 'econ');
     U_noise = 0.9 * U_noise + 0.1 * U_new(:, 1:k_noise);
