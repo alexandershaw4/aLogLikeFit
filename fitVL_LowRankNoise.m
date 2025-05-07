@@ -111,10 +111,9 @@ k_noise = min(n, 10);
 %U_noise = randn(n, k_noise) * 0.1;
 R_init = y - f(m0);
 %[U_init, ~, ~] = svd(R_init * ones(1, k_noise), 'econ');
-k = radialPD(R_init,2);
-kern   = k*diag(R_init)*k'; 
+k    = radialPD(R_init,2);
+kern = k*diag(R_init)*k'; 
 [U_init, ~, ~] = svd(kern);
-%[U_init] = atcm.fun.agauss_smooth_mat(R_init,2);U_init=U_init';
 U_noise = U_init(:, 1:k_noise) * 0.1;
 
 D_noise = 0.1 * ones(n,1);
@@ -136,14 +135,48 @@ for iter = 1:maxIter
     y_pred = f(m);
     residuals = y - y_pred;
 
+    % % Construct observation noise covariance: Sigma = UU^T + D
+    % Sigma = U_noise * U_noise' + diag(D_noise + epsilon);
+    % [L_noise, p_noise] = chol(Sigma, 'lower');
+    % if p_noise > 0
+    %     fprintf('Sigma not PD at iter %d. Adding jitter...\n', iter);
+    %     L_noise = chol(Sigma + 1e-4*eye(n), 'lower');
+    % end
+    % invSigma = L_noise' \ (L_noise \ eye(n));
+
+    % Sometimes Sigma is ill conditioned so putting in a fallback for when
+    % cholesky never works...
+    
     % Construct observation noise covariance: Sigma = UU^T + D
     Sigma = U_noise * U_noise' + diag(D_noise + epsilon);
-    [L_noise, p_noise] = chol(Sigma, 'lower');
-    if p_noise > 0
-        fprintf('Sigma not PD at iter %d. Adding jitter...\n', iter);
-        L_noise = chol(Sigma + 1e-4*eye(n), 'lower');
+
+    % Robust Cholesky with jitter
+    maxTries = 5;
+    jitter = 1e-6;
+    success = false;
+    for t = 1:maxTries
+        try
+            L_noise = chol(Sigma + jitter * eye(n), 'lower');
+            success = true;
+            break;
+        catch
+            jitter = jitter * 10;
+        end
     end
-    invSigma = L_noise' \ (L_noise \ eye(n));
+
+    if success
+        invSigma = L_noise' \ (L_noise \ eye(n));
+    else
+        fprintf('Cholesky failed after %d attempts. Falling back to Woodbury inversion...\n', maxTries);
+
+        % Woodbury-based inversion: Sigma = UU^T + D => inv(Sigma)
+        Dinv = diag(1 ./ (D_noise + epsilon));
+        A = U_noise' * Dinv * U_noise;
+        B = (eye(k_noise) + A) \ (U_noise' * Dinv);
+        invSigma = Dinv - Dinv * U_noise * B;
+    end
+
+
 
     % Log-likelihood
     logL_likelihood = -0.5 * (residuals' * invSigma * residuals + log(det(Sigma)) + n*log(2*pi));
