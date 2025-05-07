@@ -1,20 +1,53 @@
-% fitHierarchicalVL.m
-% ====================
-% Iterative Hierarchical Variational Laplace using fitVL_LowRankNoise for subject-level fits.
-% Updates group-level priors iteratively using empirical Bayes.
-% Adds basic group statistics (t-values and p-values) for each parameter.
-
 function results = fitHierarchicalVL(data, f, m0, S0, maxIter, tol, nIter, design)
+% fitHierarchicalVL - Iterative hierarchical variational Laplace inference
+%
+% Iteratively fits a hierarchical Bayesian model using low-rank variational Laplace
+% (via fitVL_LowRankNoise) for subject-level inference and empirical Bayes updates
+% for group-level prior estimation.
+%
+% This function refines subject-level parameter estimates and updates the group-level
+% prior (mean and covariance) over multiple iterations, allowing for optional modeling
+% of group-level covariates via a design matrix.
+%
 % Inputs:
 % -------
 % data     : Cell array of observed data per subject, {y1, y2, ..., yN}
-% f        : Function handle for model prediction: y = f(m)
-% m0       : Initial mean of subject-level prior
-% S0       : Initial covariance of subject-level prior
-% maxIter  : Max iterations for subject-level inference
-% tol      : Tolerance for convergence in subject fits
-% nIter    : Number of top-level (hierarchical) iterations
-% design   : Optional design matrix for group-level effects (N x p)
+% f        : Function handle for the generative model: y = f(m)
+% m0       : Initial group-level mean vector (prior mean)
+% S0       : Initial group-level covariance matrix (prior covariance)
+% maxIter  : Maximum iterations for subject-level inference using fitVL_LowRankNoise
+% tol      : Convergence tolerance for subject-level evidence (F) changes
+% nIter    : Number of top-level iterations (group-level prior updates)
+% design   : [Optional] Design matrix (N x p) for between-subject effects; if provided,
+%            regression is performed on inferred subject-level means to yield group-level
+%            parameter estimates (e.g. beta weights, t-stats, p-values)
+%
+% Outputs:
+% --------
+% results - Struct with fields:
+%   .Ep         : Cell array of posterior means for each subject
+%   .Cp         : Cell array of posterior covariances for each subject
+%   .F          : Free energy (evidence lower bound) per subject per iteration
+%   .m          : Final estimated group-level prior mean
+%   .S          : Final estimated group-level prior covariance
+%   .B          : [Optional] Group-level regression coefficients (if design provided)
+%   .T          : [Optional] t-statistics for each parameter (design-based)
+%   .P          : [Optional] p-values associated with t-statistics
+%
+% Notes:
+% ------
+% - This routine assumes independent subjects and approximates posteriors with Gaussians.
+% - Group-level covariance updates assume a diagonal or low-rank structure for scalability.
+% - Intended for models where a subject-level generative model can be efficiently fit via
+%   variational methods with heteroscedastic (low-rank) noise modeling.
+%
+% Example:
+%   results = fitHierarchicalVL(y, f, m0, S0, 8, 1e-6, 5, design);
+%
+% Dependencies:
+%   Requires fitVL_LowRankNoise for subject-level fitting.
+%
+% AS2025
 
 if nargin < 8
     design = [];
