@@ -23,6 +23,10 @@ This toolkit includes:
   - Low-rank plus diagonal modeling of **observation noise covariance**  
   - Dynamic adaptation of noise structure based on residuals
 
+- **`fitHierarchicalVL.m`**
+  The fitHierarchicalVL.m function enables hierarchical Bayesian model inversion, 
+  allowing for group-level analyses by modeling between-subject variability.
+
 ### 2. Parametric Empirical Bayes (PEB)
 - **`peb_ard_with_stats_var.m`**, **`peb_ard_with_stats.m`**, **`peb_ard_with_stats_LM.m`**
   - Implements PEB with:
