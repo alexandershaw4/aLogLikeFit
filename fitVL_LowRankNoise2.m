@@ -1,4 +1,4 @@
-function [m, V_post, D_post, logL, iter, Sigma_struct, allm] = fitVL_LowRankNoise(y, f, m0, S0, maxIter, tol, plots)
+function [m, V_post, D_post, logL, iter, Sigma_struct, allm] = fitVL_LowRankNoise2(y, f, m0, S0, maxIter, tol, plots)
 % Extended Variational Laplace with Low-Rank Observation Covariance
 % ================================================================
 % 
@@ -74,7 +74,7 @@ function [m, V_post, D_post, logL, iter, Sigma_struct, allm] = fitVL_LowRankNois
 % -----
 % - The final posterior covariance can be recovered approximately via the 
 %   Woodbury formula if needed:
-%       Sigma_q ≈ inv(D) - inv(D) * V * inv(I + V' * inv(D) * V) * V' * inv(D)
+%       Sigma_q ≈ inv(D) - inv(D) * V * inv(I + Vᵀ * inv(D) * V) * Vᵀ * inv(D)
 %
 % - although you'll get pretty close with:
 %       Sigma_q = inv( V*V' + D)
@@ -89,7 +89,6 @@ function [m, V_post, D_post, logL, iter, Sigma_struct, allm] = fitVL_LowRankNois
 %
 % Developed by AS, 2025
 
-
 if nargin < 7 || isempty(plots)
     plots = 1;
 end
@@ -98,7 +97,6 @@ n = length(y);
 m = m0(:);
 k_post = min(length(m), 20);
 
-% Prior decomposition (for q(z))
 [U, Sval, ~] = svd(full(S0), 'econ');
 eigvals = diag(Sval);
 k_prior = sum(eigvals > 0.01 * max(eigvals));
@@ -106,15 +104,10 @@ k_prior = max(k_prior, 10);
 V_post = U(:, 1:k_prior) * diag(sqrt(eigvals(1:k_prior)));
 D_post = diag(diag(S0) - sum(V_post.^2, 2));
 
-% Initial observation noise structure: Sigma = U_noise*U_noise^T + D_noise
 k_noise = min(n, 10);
-%U_noise = randn(n, k_noise) * 0.1;
 R_init = y - f(m0);
-%[U_init, ~, ~] = svd(R_init * ones(1, k_noise), 'econ');
-%k    = radialPD(R_init,2);
-
-%kern = k*diag(R_init)*k'; 
-kern = VtoGauss(R_init);
+k = radialPD(R_init, 2);
+kern = k * diag(R_init) * k';
 [U_init, ~, ~] = svd(kern);
 U_noise = U_init(:, 1:k_noise) * 0.1;
 
@@ -137,22 +130,10 @@ for iter = 1:maxIter
     y_pred = f(m);
     residuals = y - y_pred;
 
-    % % Construct observation noise covariance: Sigma = UU^T + D
-    % Sigma = U_noise * U_noise' + diag(D_noise + epsilon);
-    % [L_noise, p_noise] = chol(Sigma, 'lower');
-    % if p_noise > 0
-    %     fprintf('Sigma not PD at iter %d. Adding jitter...\n', iter);
-    %     L_noise = chol(Sigma + 1e-4*eye(n), 'lower');
-    % end
-    % invSigma = L_noise' \ (L_noise \ eye(n));
-
-    % Sometimes Sigma is ill conditioned so putting in a fallback for when
-    % cholesky never works...
-    
-    % Construct observation noise covariance: Sigma = UU^T + D
+    % Observation noise covariance
     Sigma = U_noise * U_noise' + diag(D_noise + epsilon);
 
-    % Robust Cholesky with jitter
+    % Robust Cholesky with fallback
     maxTries = 5;
     jitter = 1e-6;
     success = false;
@@ -168,22 +149,19 @@ for iter = 1:maxIter
 
     if success
         invSigma = L_noise' \ (L_noise \ eye(n));
+        log_det_Sigma = 2 * sum(log(diag(L_noise)));  % Fix 4
     else
         fprintf('Cholesky failed after %d attempts. Falling back to Woodbury inversion...\n', maxTries);
-
-        % Woodbury-based inversion: Sigma = UU^T + D => inv(Sigma)
         Dinv = diag(1 ./ (D_noise + epsilon));
         A = U_noise' * Dinv * U_noise;
         B = (eye(k_noise) + A) \ (U_noise' * Dinv);
         invSigma = Dinv - Dinv * U_noise * B;
+
+        eigs_Sigma = eig(U_noise * U_noise' + diag(D_noise));
+        log_det_Sigma = sum(log(max(eigs_Sigma, epsilon)));  % Fallback approx
     end
 
-
-
-    % Log-likelihood
-    logdetSigma = 2 * sum(log(diag(L_noise)));
-    logL_likelihood = -0.5 * (residuals' * invSigma * residuals + logdetSigma + n*log(2*pi));
-    %logL_likelihood = -0.5 * (residuals' * invSigma * residuals + log(det(Sigma)) + n*log(2*pi));
+    logL_likelihood = -0.5 * (residuals' * invSigma * residuals + log_det_Sigma + n*log(2*pi));
 
     % Jacobian
     J = computeJacobian(f, m, n);
@@ -197,14 +175,10 @@ for iter = 1:maxIter
     % Posterior covariance (low-rank update)
     [U_h, S_h, ~] = svd(H_post, 'econ');
     V_post = U_h(:,1:k_post) * sqrt(S_h(1:k_post,1:k_post));
-    
-    %D_post = diag(diag(H_post) - sum(V_post.^2, 2));
-    diag_H = diag(H_post);
-    diag_V2 = sum(V_post.^2, 2);
-    D_post_diag = max(diag_H - diag_V2, 1e-6);
-    D_post = diag(D_post_diag);
+    D_post = diag(diag(H_post) - sum(V_post.^2, 2));
+    D_post = max(D_post, 1e-6);  % Fix 1
 
-    % Mean update via preconditioned CG
+    % Mean update
     try
         L = chol(H_post, 'lower');
         dm = L' \ (L \ g_post);
@@ -215,12 +189,15 @@ for iter = 1:maxIter
     allm = [allm m(:)];
 
     % ELBO
-    %logL_entropy = 0.5 * sum(log(diag(D_post) + 1e-6));
-    D_diag = max(diag(D_post), 1e-8);
-    logL_entropy = 0.5 * sum(log(D_diag));
-
+    logL_entropy = 0.5 * sum(log(D_post));  % Fix 1
     logL_prior = -0.5 * ((m - m0)' * H_prior * (m - m0));
     logL = logL_likelihood + logL_prior + logL_entropy;
+
+    % Stability check
+    if ~isfinite(logL)
+        warning('ELBO became NaN/Inf at iter %d', iter);
+        break;
+    end
 
     all_elbo(end+1) = logL;
     allentropy = [allentropy logL_entropy];
@@ -228,25 +205,21 @@ for iter = 1:maxIter
     alllogprior = [alllogprior logL_prior];
     all_D_noise = [all_D_noise; D_noise(:)'];
 
-
-    if iter == 1 || logL > best_elbo
-        best_elbo = logL;
-        m_best = m;
-        V_best = V_post;
-        D_best = D_post;
-    end
-
-    % Update observation noise structure using factor analysis-style update
+    % Observation noise update
     E2 = residuals.^2;
-    D_noise = 0.9 * D_noise + 0.1 * max(E2 - sum(U_noise.^2,2), epsilon);
-    %k = radialPD(residuals,2);
-    %kern = k*diag(residuals)*k';
-    kern = VtoGauss(residuals);
-    [U_new, ~, ~] = svd(kern);
+    raw_update = max(E2 - sum(U_noise.^2,2), epsilon);
+    D_noise = 0.9 * D_noise + 0.1 * raw_update;
+    D_noise = max(D_noise, 1e-6);  % Fix 2
 
-    %[U_new, ~, ~] = svd(residuals * ones(1, k_noise), 'econ');
+    k = radialPD(residuals,2);
+    kern = k*diag(residuals)*k';
+    [U_new, ~, ~] = svd(kern);
     U_noise = 0.9 * U_noise + 0.1 * U_new(:, 1:k_noise);
-    %U_noise = 0.9 * U_noise + 0.1 * (residuals * randn(1, k_noise));
+
+    % Optional normalization for stability (Fix 3)
+    for j = 1:k_noise
+        U_noise(:,j) = U_noise(:,j) / (norm(U_noise(:,j)) + 1e-8);
+    end
 
     if plots
         figure(fw); clf;
@@ -303,6 +276,7 @@ for iter = 1:maxIter
         set(gcf, 'Color', 'w');
         set(findall(gcf,'-property','FontSize'),'FontSize',18);
         drawnow;
+
     end
 
     if norm(dm) < tol
@@ -315,14 +289,6 @@ end
 
 Sigma_struct.U = U_noise;
 Sigma_struct.D = D_noise;
-
-% return best fits
-fprintf('Returning best fits...\n');
-m      = m_best; 
-V_post = V_best; 
-D_post = D_best;
-logL   = best_elbo;
-
 
 end
 

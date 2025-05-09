@@ -59,3 +59,8 @@ V  = diag(M.opts.V );
 
 % run fitHierarchicalVL (calls fitVL_LowRankNoise)
 results = fitHierarchicalVL(y, fun, x0, V, maxIter, tol, nIter, X)
+
+plotSubjectFits(results, y, fun, 1)
+
+results.data = y;
+results.fun = fun;

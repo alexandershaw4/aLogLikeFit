@@ -2,7 +2,7 @@ function results = fitHierarchicalVL(data, f, m0, S0, maxIter, tol, nIter, desig
 % fitHierarchicalVL - Iterative hierarchical variational Laplace inference
 %
 % Iteratively fits a hierarchical Bayesian model using low-rank variational Laplace
-% (via fitVL_LowRankNoise) for subject-level inference and empirical Bayes updates
+% (via fitVariationalLaplaceThermo) for subject-level inference and empirical Bayes updates
 % for group-level prior estimation.
 %
 % This function refines subject-level parameter estimates and updates the group-level
@@ -45,12 +45,14 @@ function results = fitHierarchicalVL(data, f, m0, S0, maxIter, tol, nIter, desig
 %   results = fitHierarchicalVL(y, f, m0, S0, 8, 1e-6, 5, design);
 %
 % Dependencies:
-%   Requires fitVL_LowRankNoise for subject-level fitting.
+%   Requires fitVariationalLaplaceThermo for subject-level fitting.
 %
 % AS2025
 
 if nargin < 8
     design = [];
+else
+    design = design - mean(design);
 end
 
 N = numel(data);
@@ -65,6 +67,12 @@ subject_posteriors = cell(N,1);
 all_group_means = zeros(d, nIter);
 all_group_covs = cell(nIter, 1);
 
+% Stability parameters
+alpha = 0.1;                % Damping factor
+jitter = 1e-6;              % Diagonal jitter
+min_var = 1e-4;             % Minimum allowed variance (variance floor)
+max_precision = 1e6;        % Max precision cap (optional)
+
 for iter = 1:nIter
     fprintf('\nHierarchical iteration %d/%d\n', iter, nIter);
     m_all = zeros(d,N);
@@ -73,7 +81,7 @@ for iter = 1:nIter
     % ====== Subject-level inference ======
     parfor i = 1:N
         y_i = data{i};
-        [m_i, V_i, D_i, ~, ~, ~, ~] = fitVL_LowRankNoise(y_i, f, mu_g, Sigma_g, maxIter, tol, 0);
+        [m_i, V_i, D_i, logL, ~, ~, ~] = fitVariationalLaplaceThermo(y_i, f, mu_g, Sigma_g, maxIter, tol, 0);
         S_i = V_i * V_i' + diag(D_i);
 
         m_i = denan(real(m_i));
@@ -85,37 +93,84 @@ for iter = 1:nIter
         subject_posteriors{i}.S = S_i;
     end
 
-    % ====== Group-level update ======
-    mu_g = mean(m_all, 2);
-    Sigma_g = zeros(d);
-    for i = 1:N
-        m_i = m_all(:,i);
-        S_i = S_all(:,:,i);
-        Sigma_g = Sigma_g + S_i + (m_i - mu_g) * (m_i - mu_g)';
-    end
-    Sigma_g = Sigma_g / N;
+    % ====== Empirical Bayes Group-level update ======
+    %mu_empirical = mean(m_all, 2);
+    if ~isempty(design)
+        X = design;
+        X = X - mean(X, 1); % mean-centering
 
-    % Optional shrinkage or regularisation (to keep positive-definite)
-    Sigma_g = Sigma_g + 1e-6 * eye(d);
+        % Ridge regression for each parameter (d parameters)
+        beta = (X' * X + 1e-6 * eye(size(X,2))) \ (X' * m_all');
+
+        % Reconstruct subject-specific fitted values
+        mu_empirical = (X * beta)';  % [d x N]
+        mu_empirical_mean = mean(mu_empirical, 2);  % for group-centering
+    else
+        mu_empirical = repmat(mean(m_all, 2), 1, N);
+        mu_empirical_mean = mean(m_all, 2);
+    end
+    
+    Sigma_empirical = zeros(d);
+    for i = 1:N
+       m_i = m_all(:,i);
+       S_i = S_all(:,:,i);
+       Sigma_empirical = Sigma_empirical + S_i + (m_i - mu_empirical) * (m_i - mu_empirical)';
+    end
+
+    %Sigma_empirical = zeros(d);
+    %for i = 1:N
+    %    m_i = m_all(:,i);
+    %    mu_i = mu_empirical(:,i);
+    %    S_i = S_all(:,:,i);
+    %    Sigma_empirical = Sigma_empirical + S_i + (m_i - mu_i) * (m_i - mu_i)';
+    %end
+
+    Sigma_empirical = Sigma_empirical / N;
+
+    % Damp only the mean
+    %mu_g = (1 - alpha) * mu_g + alpha * mu_empirical;
+    mu_g = (1 - alpha) * mu_g + alpha * mu_empirical_mean;
+
+    % Regularize with shrinkage toward prior
+    lambda = 0.1;  % 0 = full data-driven, 1 = stay near prior
+    Sigma_g = (1 - lambda) * Sigma_empirical + lambda * S0;
+
+    % Ensure numerical stability (non-cumulative)
+    [~, p] = chol(Sigma_g);
+    if p > 0
+        % If not positive definite, add jitter once
+        Sigma_g = Sigma_g + jitter * eye(d);
+    end
+
+    % print update
+    fprintf('\nHierarchical iteration -- group update %d/%d\n', iter, nIter);
+    fprintf('  Min var: %.2e | Max var: %.2e | cond(Sigma_g): %.2e\n', ...
+        min(diag(Sigma_g)), max(diag(Sigma_g)), cond(Sigma_g));
+
+    % Optional: cap precision values (commented out; can enable if needed)
+    % P = inv(Sigma_g);
+    % P = min(P, max_precision);
+    % Sigma_g = inv(P);
 
     % Store
     all_group_means(:,iter) = mu_g;
     all_group_covs{iter} = Sigma_g;
 end
 
-% Optional: project onto group-level covariates (design matrix)
+% Optional: group-level covariates (e.g. design matrix)
 if ~isempty(design)
-    % Use ridge regression for robustness
     X = design;
     beta = (X' * X + 1e-6 * eye(size(X,2))) \ (X' * m_all');
     group_model.X = X;
     group_model.beta = beta;
     group_model.fitted = X * beta;
 
-    % If design is binary group contrast, compute t- and p-values
-    if size(X,2) == 2 && all(ismember(unique(X(:,2)), [0, 1]))
-        group1_idx = X(:,2) == 0;
-        group2_idx = X(:,2) == 1;
+    contrast_vals = unique(X(:,2));
+    if numel(contrast_vals) == 2
+        idx1 = X(:,2) == contrast_vals(1);
+        idx2 = X(:,2) == contrast_vals(2);
+        group1_idx = idx1;
+        group2_idx = idx2;
         m1 = m_all(:, group1_idx);
         m2 = m_all(:, group2_idx);
 
@@ -137,14 +192,13 @@ else
     group_model = [];
 end
 
-% ====== Compute group statistics ======
-% Mean and std for each parameter
+% ====== Final group stats ======
 param_means = mean(m_all, 2);
 param_stds = std(m_all, 0, 2);
 t_vals = param_means ./ (param_stds / sqrt(N));
 p_vals = 2 * (1 - tcdf(abs(t_vals), N - 1));
 
-% Output structure
+% Output
 results.subject_posteriors = subject_posteriors;
 results.group_means = all_group_means;
 results.group_covariances = all_group_covs;
