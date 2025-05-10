@@ -186,36 +186,43 @@ for iter = 1:nIter
     end
 end
 
-% Optional: group-level covariates (e.g. design matrix)
 if ~isempty(design)
-    X = design;
-    beta = (X' * X + 1e-6 * eye(size(X,2))) \ (X' * m_all');
-    group_model.X = X;
-    group_model.beta = beta;
-    group_model.fitted = X * beta;
+    group_col = design(:,2);  % assume column 2 defines group membership
+    group_ids = unique(group_col);
 
-    contrast_vals = unique(X(:,2));
-    if numel(contrast_vals) == 2
-        idx1 = X(:,2) == contrast_vals(1);
-        idx2 = X(:,2) == contrast_vals(2);
-        group1_idx = idx1;
-        group2_idx = idx2;
-        m1 = m_all(:, group1_idx);
-        m2 = m_all(:, group2_idx);
+    if numel(group_ids) == 2
+        idx1 = group_col == group_ids(1);
+        idx2 = group_col == group_ids(2);
 
-        n1 = sum(group1_idx);
-        n2 = sum(group2_idx);
+        m1 = m_all(:, idx1);
+        m2 = m_all(:, idx2);
 
-        mean_diff = mean(m2,2) - mean(m1,2);
-        pooled_std = sqrt(((std(m1,0,2)).^2 + (std(m2,0,2)).^2) / 2);
-        t_vals_contrast = mean_diff ./ (pooled_std .* sqrt(2 / min(n1, n2)));
+        n1 = sum(idx1);
+        n2 = sum(idx2);
+
+        % Means
+        mean1 = mean(m1, 2);
+        mean2 = mean(m2, 2);
+
+        % Differences and pooled variance
+        mean_diff = mean2 - mean1;
+        pooled_std = sqrt(((std(m1, 0, 2)).^2 + (std(m2, 0, 2)).^2) / 2);
+        t_vals = mean_diff ./ (pooled_std .* sqrt(2 / min(n1, n2)));
         df = n1 + n2 - 2;
-        p_vals_contrast = 2 * (1 - tcdf(abs(t_vals_contrast), df));
+        p_vals = 2 * (1 - tcdf(abs(t_vals), df));
 
-        group_model.contrast.group1_mean = mean(m1,2);
-        group_model.contrast.group2_mean = mean(m2,2);
-        group_model.contrast.t_vals = t_vals_contrast;
-        group_model.contrast.p_vals = p_vals_contrast;
+        % Store results
+        group_model.group_labels = group_ids;
+        group_model.group1_idx = idx1;
+        group_model.group2_idx = idx2;
+        group_model.group1_mean = mean1;
+        group_model.group2_mean = mean2;
+        group_model.mean_diff = mean_diff;
+        group_model.t_vals = t_vals;
+        group_model.p_vals = p_vals;
+    else
+        warning('More than two unique group values detected in design(:,2); skipping contrast stats.');
+        group_model = [];
     end
 else
     group_model = [];
