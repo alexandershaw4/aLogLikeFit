@@ -49,6 +49,8 @@ function results = fitHierarchicalVL(data, f, m0, S0, maxIter, tol, nIter, desig
 %
 % AS2025
 
+m0 = real(m0);
+
 if nargin < 8
     design = [];
 else
@@ -72,33 +74,37 @@ F_all_iters = zeros(N, nIter);
 
 for iter = 1:nIter
     fprintf('\nHierarchical iteration %d/%d\n', iter, nIter);
-    m_all = zeros(d,N);
+    m_all = mu_subjectwise;
     S_all = zeros(d,d,N);
 
     % ====== Subject-level inference ======
-    parfor i = 1:N
-        y_i = data{i};
-
-        group_mu_i = mu_subjectwise(:, i);
-        [m_i, V_i, D_i, logL, ~, ~, ~] = fitVariationalLaplaceThermo(y_i, f, group_mu_i, Sigma_g, maxIter, tol, 0);
-        %[m_i, V_i, D_i, logL, ~, ~, ~] = fitVariationalLaplaceThermo(y_i, f, mu_g, Sigma_g, maxIter, tol, 0);
-        S_i = V_i * V_i' + diag(D_i);
-
-        % Store ELBO/log evidence for plotting and group-wise KDE
-        F_all_iters(i, iter) = logL;
-
-        m_i = denan(real(m_i));
-        S_i = denan(real(S_i));
-
-        m_all(:,i) = m_i;
-        S_all(:,:,i) = S_i;
-        subject_posteriors{i}.m = m_i;
-        subject_posteriors{i}.S = S_i;
+    if iter > 1
+        fprintf('Individual level fits...\n');
+        parfor i = 1:N
+            y_i = data{i};
+    
+            group_mu_i = mu_subjectwise(:, i);
+            [m_i, V_i, D_i, logL, ~, ~, ~] = fitVariationalLaplaceThermo(y_i, f, group_mu_i, Sigma_g, maxIter, tol, 0);
+            %[m_i, V_i, D_i, logL, ~, ~, ~] = fitVariationalLaplaceThermo(y_i, f, mu_g, Sigma_g, maxIter, tol, 0);
+            S_i = V_i * V_i' + diag(D_i);
+    
+            % Store ELBO/log evidence for plotting and group-wise KDE
+            F_all_iters(i, iter) = logL;
+    
+            m_i = denan(real(m_i));
+            S_i = denan(real(S_i));
+    
+            m_all(:,i) = m_i;
+            S_all(:,:,i) = S_i;
+            subject_posteriors{i}.m = m_i;
+            subject_posteriors{i}.S = S_i;
+        end
     end
 
     % ====== Group-level update (GMM shrinkage only) ======
     if iter < nIter
-        
+        fprintf('Group level fits...\n');
+
         [groupIDs, ~, groupIndex] = unique(design(:,2));  % Assume column 2 codes group
         G = numel(groupIDs);
         group_means = zeros(d, G);
@@ -106,33 +112,89 @@ for iter = 1:nIter
         % new GMM code
         % For each group
         for g = 1:G
+            
+
             idx = (groupIndex == g);
             Xg = m_all(:, idx)';  % [n_g x d]
+            group_vals = design(idx, 2);
+            unique_groups = unique(group_vals);
+            n_g = size(Xg, 1);
+            d = size(Xg, 2);
 
-            % Fit GMM to group
-            alpha = .1;
+            alpha = 0.1;
+
             try
-                gmm = fitgmdist(Xg, 2, 'RegularizationValue', 1e-4);
+                % === Step 1: Reduce dimensionality using PCA ===
+                num_pca_dims = min(n_g - 1, d);  % Ensure enough rows for GMM
+                [coeff, score] = pca(Xg, 'NumComponents', num_pca_dims);
+                Xg_reduced = score;  % [n_g x num_pca_dims]
+
+                % === Step 2: Initialise GMM using group-aware means in PCA space ===
+                mu_init = zeros(2, num_pca_dims);
+
+                if numel(unique_groups) == 2
+                    for gi = 1:2
+                        mu_init(gi, :) = mean(Xg_reduced(group_vals == unique_groups(gi), :), 1);
+                    end
+                else
+                    % Fallback: just take two random initial rows
+                    mu_init = Xg_reduced(randperm(n_g, 2), :);
+                end
+
+                gmm = fitgmdist(real(Xg_reduced), 2, 'RegularizationValue', 1e-4);
+
+                % === Step 3: Assign components and update priors ===
+                P = pdf(gmm, Xg_reduced);
+                [~, comps] = max(P, [], 2);
+
+                i_group = find(idx);
+                for j = 1:numel(i_group)
+                    comp = comps(j);
+                    mu_target_reduced = gmm.mu(comp, :)';         % In PCA space
+                    mu_target_full = coeff(:, 1:num_pca_dims) * mu_target_reduced;  % Project back to original space
+                    mu_subjectwise(:, i_group(j)) = ...
+                        (1 - alpha) * m_all(:, i_group(j)) + alpha * mu_target_full;
+                end
+
             catch
-                warning('GMM fit failed for group %d — falling back to mean', g);
+                warning('GMM with PCA failed for group %d — falling back to mean', g);
                 group_mean = mean(Xg, 1);
                 for i = find(idx)
                     mu_subjectwise(:, i) = (1 - alpha) * m_all(:, i) + alpha * group_mean';
                 end
-                continue;
             end
 
-            % Assign subjects to closest mode
-            P = pdf(gmm, Xg);
-            [~, comps] = max(P, [], 2);
+            
+            % idx = (groupIndex == g);
+            % Xg = m_all(:, idx)';  % [n_g x d]
+            % Xg_aug = [Xg, design(idx, 2)];
+            % 
+            % % Fit GMM to group
+            % alpha = .1;
+            % try
+            %     gmm = fitgmdist(Xg_aug, 2, 'RegularizationValue', 1e-4);
+            % catch
+            %     warning('GMM fit failed for group %d — falling back to mean', g);
+            %     group_mean = mean(Xg, 1);
+            %     for i = find(idx)
+            %         mu_subjectwise(:, i) = (1 - alpha) * m_all(:, i) + alpha * group_mean';
+            %     end
+            %     continue;
+            % end
+            % 
+            % % Assign subjects to closest mode
+            % P = pdf(gmm, Xg_aug);
+            % [~, comps] = max(P, [], 2);
+            % 
+            % % Update priors toward assigned component
+            % for j = 1:sum(idx)
+            %     i = find(idx);
+            %     comp = comps(j);
+            %     mu_target = gmm.mu(comp, :)';
+            %     mu_subjectwise(:, i(j)) = (1 - alpha) * m_all(:, i(j)) + alpha * mu_target;
+            % end
 
-            % Update priors toward assigned component
-            for j = 1:sum(idx)
-                i = find(idx);
-                comp = comps(j);
-                mu_target = gmm.mu(comp, :)';
-                mu_subjectwise(:, i(j)) = (1 - alpha) * m_all(:, i(j)) + alpha * mu_target;
-            end
+
         end
     
         % old non-GMM code
@@ -158,33 +220,6 @@ for iter = 1:nIter
         all_group_means(:, iter) = mu_g;
     end
 
-    % if mod(iter, 1) == 0  % Plot every iteration (change to e.g. mod(iter,5)==0 if needed)
-    %     group_col = design(:,2);
-    %     group_ids = unique(group_col);
-    %     colors = lines(numel(group_ids));
-    % 
-    %     figure(fig); clf;
-    %     hold on;
-    % 
-    %     for g = 1:numel(group_ids)
-    %         idx = group_col == group_ids(g);
-    %         F_group = real(F_all_iters(idx, iter));
-    %         [f, xi] = ksdensity(F_group);
-    % 
-    %         plot(xi, f, 'LineWidth', 2, 'DisplayName', sprintf('Group %d', group_ids(g)), ...
-    %             'Color', colors(g,:));
-    % 
-    %         xline(mean(F_group), '--', sprintf('\\mu = %.2f', mean(F_group)), ...
-    %             'Color', colors(g,:), 'LabelHorizontalAlignment', 'left');
-    %     end
-    % 
-    %     xlabel('Free Energy (ELBO)');
-    %     ylabel('Density');
-    %     title(sprintf('ELBO Distributions by Group — Iteration %d', iter));
-    %     legend('show');
-    %     drawnow;
-    %     pause(0.01);
-    % end
 end
 
 if ~isempty(design)
