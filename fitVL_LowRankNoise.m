@@ -21,7 +21,7 @@ function [m, V_post, D_post, logL, iter, Sigma_struct, allm] = fitVL_LowRankNois
 % - D captures **individual parameter variances** (diagonal noise).
 %
 % The **observation noise covariance** Sigma is also modeled as:
-%          Sigma ≈ U * Uᵀ + diag(D_noise)
+%          Sigma ≈ U * U' + diag(D_noise)
 % and updated during inference based on model residuals.
 %
 %

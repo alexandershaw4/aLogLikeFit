@@ -11,7 +11,7 @@ function [m, V, D, logL, iter, sigma2, allm] = fitVariationalLaplaceThermo(y, f,
 % is efficiently represented using a low-rank plus diagonal structure 
 % (S ≈ VV^T + D), allowing for tractable optimization even in high dimensions.
 %
-% Returs the posterior: q(z) ~ N(m, VVᵀ + D)
+% Returs the posterior: q(z) ~ N(m, VV' + D)
 %
 % Key Features:
 % - Smarter variance updates: Dynamically adapts observation noise variances (sigma2).
@@ -166,7 +166,7 @@ for iter = 1:maxIter
             logL_entropy_trial = 0.5 * sum(log(diag(H_trial) + 1e-6)); % Approximate
             logL_trial = logL_likelihood_trial + logL_prior_trial + logL_entropy_trial;
 
-            fprintf('  Attempt %d: scaled step %.4f | ELBO: %.4f\n', attempt, stepScale^attempt, logL_trial);
+            fprintf(' Attempt %d: scaled step %.4f | ELBO: %.4f\n', attempt, stepScale^attempt, logL_trial);
 
             if logL_trial > logL
                 success = true;

@@ -47,11 +47,14 @@ for i = 1:length(DCMs)
 end
 
 % initiate an aFitDCM object
-load(DCMs{1},'DCM');
-M = aFitDCM(DCM);
+for i = 1:length(DCMs)
+    load(DCMs{i},'DCM');
+    M = aFitDCM(DCM);
+    x0(i,:) = full(M.DD.cm'*spm_vec(DCM.Ep));
+end
 
 % get initial points, function handle etc
-x0  = M.opts.x0(:);
+%x0  = M.opts.x0(:);
 fun = @(varargin)M.wrapdm(varargin{:});
 
 %x0 = spm_vec(obj.DCM.M.pE);
