@@ -89,8 +89,8 @@ for iter = 1:nIter
             % Store ELBO/log evidence for plotting and group-wise KDE
             F_all_iters(i, iter) = logL;
     
-            m_i = denan(real(m_i));
-            S_i = denan(real(S_i));
+            m_i = denan((m_i));
+            S_i = denan((S_i));
     
             m_all(:,i) = m_i;
             S_all(:,:,i) = S_i;
@@ -99,118 +99,67 @@ for iter = 1:nIter
         end
     end
 
+    % ====== Augment design matrix with PCA-derived latent group ======
+    if  ~isempty(design)
+        m_for_pca = (m_all)';  % [N x d]
+        [coeff, score, latent] = pca(m_for_pca);
+
+        % Compute cumulative explained variance
+        explained_var = cumsum(latent) / sum(latent);
+
+        % Find number of components to explain at least 90% variance
+        k_est = find(explained_var >= 0.90, 1, 'first');
+
+        % Cap k to prevent overly granular clustering
+        k_est = max(2, min(k_est, 5));  % minimum 2, max 5 clusters
+
+        % Use first PC for fallback thresholding
+        pca_scores = score(:, 1);
+
+        try
+            % KMeans clustering on reduced PCA scores
+            latent_group = kmeans(score(:, 1:k_est), k_est, 'Replicates', 5);
+        catch
+            warning('KMeans failed — falling back to median split on PC1');
+            latent_group = double(pca_scores > median(pca_scores)) + 1;
+            k_est = 2;
+        end
+
+        % Add PCA-defined latent group to design
+        design(:,3) = latent_group;
+
+        fprintf('Current estimate: %d subgroups\n',length(unique(latent_group)));
+
+        % Optional: Store PCA info for diagnostics
+        results.latent_pca_scores = pca_scores;
+        results.estimated_k = k_est;
+        results.explained_variance = explained_var;        
+        results.estimated_k = k_est;
+    end
+
     % ====== Group-level update (GMM shrinkage only) ======
     if iter < nIter
         fprintf('Group level fits...\n');
 
-        [groupIDs, ~, groupIndex] = unique(design(:,2));  % Assume column 2 codes group
-        G = numel(groupIDs);
-        group_means = zeros(d, G);
+        mu_subjectwise = m_all;  % Start from current posteriors
+        alpha = 0.025;
 
-        % % new GMM code
-        % % For each group
-        % for g = 1:G
-        % 
-        % 
-        %     idx = (groupIndex == g);
-        %     Xg = m_all(:, idx)';  % [n_g x d]
-        %     group_vals = design(idx, 2);
-        %     unique_groups = unique(group_vals);
-        %     n_g = size(Xg, 1);
-        %     d = size(Xg, 2);
-        % 
-        %     alpha = 0.1;
-        % 
-        %     try
-        %         % === Step 1: Reduce dimensionality using PCA ===
-        %         num_pca_dims = min(n_g - 1, d);  % Ensure enough rows for GMM
-        %         [coeff, score] = pca(Xg, 'NumComponents', num_pca_dims);
-        %         Xg_reduced = score;  % [n_g x num_pca_dims]
-        % 
-        %         % === Step 2: Initialise GMM using group-aware means in PCA space ===
-        %         mu_init = zeros(2, num_pca_dims);
-        % 
-        %         if numel(unique_groups) == 2
-        %             for gi = 1:2
-        %                 mu_init(gi, :) = mean(Xg_reduced(group_vals == unique_groups(gi), :), 1);
-        %             end
-        %         else
-        %             % Fallback: just take two random initial rows
-        %             mu_init = Xg_reduced(randperm(n_g, 2), :);
-        %         end
-        % 
-        %         gmm = fitgmdist(real(Xg_reduced), 2, 'RegularizationValue', 1e-4);
-        % 
-        %         % === Step 3: Assign components and update priors ===
-        %         P = pdf(gmm, Xg_reduced);
-        %         [~, comps] = max(P, [], 2);
-        % 
-        %         i_group = find(idx);
-        %         for j = 1:numel(i_group)
-        %             comp = comps(j);
-        %             mu_target_reduced = gmm.mu(comp, :)';         % In PCA space
-        %             mu_target_full = coeff(:, 1:num_pca_dims) * mu_target_reduced;  % Project back to original space
-        %             mu_subjectwise(:, i_group(j)) = ...
-        %                 (1 - alpha) * m_all(:, i_group(j)) + alpha * mu_target_full;
-        %         end
-        % 
-        %     catch
-        %         warning('GMM with PCA failed for group %d — falling back to mean', g);
-        %         group_mean = mean(Xg, 1);
-        %         for i = find(idx)
-        %             mu_subjectwise(:, i) = (1 - alpha) * m_all(:, i) + alpha * group_mean';
-        %         end
-        %     end
-        % 
-        % 
-        %     % idx = (groupIndex == g);
-        %     % Xg = m_all(:, idx)';  % [n_g x d]
-        %     % Xg_aug = [Xg, design(idx, 2)];
-        %     % 
-        %     % % Fit GMM to group
-        %     % alpha = .1;
-        %     % try
-        %     %     gmm = fitgmdist(Xg_aug, 2, 'RegularizationValue', 1e-4);
-        %     % catch
-        %     %     warning('GMM fit failed for group %d — falling back to mean', g);
-        %     %     group_mean = mean(Xg, 1);
-        %     %     for i = find(idx)
-        %     %         mu_subjectwise(:, i) = (1 - alpha) * m_all(:, i) + alpha * group_mean';
-        %     %     end
-        %     %     continue;
-        %     % end
-        %     % 
-        %     % % Assign subjects to closest mode
-        %     % P = pdf(gmm, Xg_aug);
-        %     % [~, comps] = max(P, [], 2);
-        %     % 
-        %     % % Update priors toward assigned component
-        %     % for j = 1:sum(idx)
-        %     %     i = find(idx);
-        %     %     comp = comps(j);
-        %     %     mu_target = gmm.mu(comp, :)';
-        %     %     mu_subjectwise(:, i(j)) = (1 - alpha) * m_all(:, i(j)) + alpha * mu_target;
-        %     % end
-        % 
-        % 
-        % end
-    
-        % old non-GMM code
-        % Compute mean parameter vector for each group
-        for g = 1:G
-            idx = (groupIndex == g);
-            group_means(:, g) = mean(m_all(:, idx), 2);
-        end
+        for j = 2:3  % Shrink to both diagnostic (col 2) and latent group (col 3)
+            predictor = design(:, j);
+            [groupIDs, ~, groupIndex] = unique(predictor);
+            G = numel(groupIDs);
 
-        % Shrink each subject’s prior mean toward their group mean
-        mu_subjectwise = zeros(d, N);
-        alpha = .05;
-        for i = 1:N
-            g = groupIndex(i);
-            %mu_subjectwise(:, i) = (1 - alpha) * mu_subjectwise(:, i) + alpha * group_means(:, g);
-            mu_subjectwise(:, i) = (1 - alpha) * m_all(:,i) + alpha * group_means(:, g);
+            group_means = zeros(d, G);
+            for g = 1:G
+                idx = (groupIndex == g);
+                group_means(:, g) = mean(m_all(:, idx), 2);
+            end
+
+            for i = 1:N
+                g = groupIndex(i);
+                mu_subjectwise(:, i) = (1 - alpha) * mu_subjectwise(:, i) + alpha * group_means(:, g);
+            end
         end
-    
         % Update global prior mean just for tracking/debug (not needed for model)
         mu_g = mean(mu_subjectwise, 2);
     
