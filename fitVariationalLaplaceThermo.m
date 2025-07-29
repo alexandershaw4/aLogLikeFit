@@ -1,4 +1,4 @@
-function [m, V, D, logL, iter, sigma2, allm] = fitVariationalLaplaceThermo(y, f, m0, S0, maxIter, tol,plots)
+function [m, V, D, logL, iter, sigma2, allm,g_elbo] = fitVariationalLaplaceThermo(y, f, m0, S0, maxIter, tol,plots)
 % Extended Variational Laplace with Low-Rank Approximation, Smarter Variance 
 % Updates, and Thermodynamic Integration. Non extended version is fitVariationalLaplace.
 %
@@ -43,6 +43,8 @@ if nargin < 7 || isempty(plots);
 end
 
 thresh = 1/16;
+solenoidalmix = 1;
+
 
 % Initialization
 m = m0(:);
@@ -133,7 +135,14 @@ for iter = 1:maxIter
         dm = dm * (maxStepSize / norm(dm));
     end
 
-    %dm = pcg(H_elbo, g_elbo, 1e-6, 100);
+    % solenoidal mixing, if enabled
+    if solenoidalmix
+        Q = H_elbo - H_elbo';       % skew-symmetric part of Hessian
+        gamma = 0.1;                % scaling factor for solenoidal adjustment
+        dm = dm - gamma * Q * dm;
+        
+    end
+
     m_prev = m; 
     m  = m + dm;
     allm = [allm m(:)];

@@ -1,7 +1,7 @@
 function test_fitHierarchicalVL()
 % Test the fitHierarchicalVL routine on synthetic multimodal data
 
-rng(42);  % For reproducibility
+%rng(42);  % For reproducibility
 
 % -------------------------
 % Synthetic model definition

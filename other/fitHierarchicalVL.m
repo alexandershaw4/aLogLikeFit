@@ -92,8 +92,9 @@ for iter = 1:nIter
         m_for_pca = real(m_all)';
         [~, score, latent] = pca(m_for_pca);
         explained_var = cumsum(latent) / sum(latent);
-        k_est = find(explained_var >= 0.90, 1, 'first');
-        k_est = max(2, min(k_est, 8));
+        k_est = find(explained_var >= 0.98, 1, 'first');
+        %k_est = max(2, min(k_est, 12));
+        k_est = max(2, k_est);
         try
             latent_group = kmeans(score(:, 1:k_est), k_est, 'Replicates', 5);
         catch
@@ -170,35 +171,35 @@ for iter = 1:nIter
     end
 end
 
-% ====== Refit poorly performing subjects using original priors ======
-fprintf('\nRefitting low-performing subjects from original priors...\n');
-
-refit_thresh = quantile(F_all_iters(:, end), 0.05);  % bottom 5% ELBOs
-refit_count = 0;
-
-for i = 1:N
-    if F_all_iters(i, end) < refit_thresh
-        fprintf('  Refit subject %d (ELBO = %.2f)...\n', i, F_all_iters(i, end));
-        y_i = data{i};
-        m0_i = m0(i, :)';           % original prior mean
-        S0_i = S0;                  % original prior covariance
-
-        [m_refit, V_i, D_i, logL, ~, ~, ~] = fitVariationalLaplaceThermo(...
-            y_i, f, m0_i, S0_i, maxIter * 2, tol, 0);
-
-        S_refit = V_i * V_i' + diag(D_i);
-
-        m_all(:, i) = m_refit;
-        S_all(:, :, i) = S_refit;
-        subject_posteriors{i}.m = m_refit;
-        subject_posteriors{i}.S = S_refit;
-        F_all_iters(i, end) = logL;
-
-        refit_count = refit_count + 1;
-    end
-end
-
-fprintf('Refit %d subject(s) using original priors.\n', refit_count);
+% % ====== Refit poorly performing subjects using original priors ======
+% fprintf('\nRefitting low-performing subjects from original priors...\n');
+% 
+% refit_thresh = quantile(F_all_iters(:, end), 0.05);  % bottom 5% ELBOs
+% refit_count = 0;
+% 
+% for i = 1:N
+%     if F_all_iters(i, end) < refit_thresh
+%         fprintf('  Refit subject %d (ELBO = %.2f)...\n', i, F_all_iters(i, end));
+%         y_i = data{i};
+%         m0_i = m0(i, :)';           % original prior mean
+%         S0_i = S0;                  % original prior covariance
+% 
+%         [m_refit, V_i, D_i, logL, ~, ~, ~] = fitVariationalLaplaceThermo(...
+%             y_i, f, m0_i, S0_i, maxIter * 2, tol, 0);
+% 
+%         S_refit = V_i * V_i' + diag(D_i);
+% 
+%         m_all(:, i) = m_refit;
+%         S_all(:, :, i) = S_refit;
+%         subject_posteriors{i}.m = m_refit;
+%         subject_posteriors{i}.S = S_refit;
+%         F_all_iters(i, end) = logL;
+% 
+%         refit_count = refit_count + 1;
+%     end
+% end
+% 
+% fprintf('Refit %d subject(s) using original priors.\n', refit_count);
 
 if ~isempty(design)
     group_col = design(:,2);

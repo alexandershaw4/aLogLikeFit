@@ -1,4 +1,4 @@
-function [beta, lambda_vals, t_stats, p_values, posterior_means, posterior_covs] = ...
+function [beta, lambda_vals, t_stats, p_values, posterior_means, posterior_covs,free_energy] = ...
     peb_ard_with_stats_var(theta, X, Sigma_theta_prior, max_iter, tol)
 % This function implements a Parametric Empirical Bayes (PEB) method for 
 % estimating group-level parameters while incorporating individual-level 
@@ -116,4 +116,28 @@ t_stats = beta ./ sqrt(beta_variance);
 % Compute p-values (two-tailed)
 df = N - p; % Degrees of freedom
 p_values = 2 * (1 - tcdf(abs(t_stats), df));
+
+% Compute Free Energy 
+log2pi = log(2 * pi);
+F = 0;
+for i = 1:N
+    mu_q = posterior_means(i, :)';
+    Sigma_q = squeeze(posterior_covs(i, :, :));
+    mu_p = (X(i,:) * beta)';
+    Sigma_p = diag(sigma_squared(i,:)); % Likelihood approx
+
+    % KL[q || p]
+KL = 0.5 * ( trace(squeeze(Sigma_theta_prior_inv(i,:,:)) * Sigma_q) + ...
+    (theta(i,:)' - mu_q)' * squeeze(Sigma_theta_prior_inv(i,:,:)) * (theta(i,:)' - mu_q) - ...
+    d + log(det(squeeze(Sigma_theta_prior(i,:,:))) + 1e-10) - log(det(Sigma_q) + 1e-10) );
+
+    % Expected log-likelihood
+    diff = theta(i,:)' - mu_p;
+    ELL = -0.5 * (d * log2pi + sum(log(sigma_squared(i,:))) + sum((diff.^2) ./ sigma_squared(i,:)'));
+
+    F = F + ELL - KL;
+end
+
+free_energy = F;
+
 end
