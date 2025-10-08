@@ -1,4 +1,4 @@
-function [m, V, D, logL, iter, sigma2, allm,g_elbo] = fitVariationalLaplaceThermo(y, f, m0, S0, maxIter, tol,plots)
+function [m, V, D, logL, iter, sigma2, allm,g_elbo] = fitVariationalLaplaceThermo(y, f, m0, S0, maxIter, tol,plots,varpercthresh)
 % Extended Variational Laplace with Low-Rank Approximation, Smarter Variance 
 % Updates, and Thermodynamic Integration. Non extended version is fitVariationalLaplace.
 %
@@ -41,9 +41,12 @@ function [m, V, D, logL, iter, sigma2, allm,g_elbo] = fitVariationalLaplaceTherm
 if nargin < 7 || isempty(plots);
     plots = 1;
 end
+if nargin < 8 || isempty(varpercthresh)
+    varpercthresh = 0.01;
+end
 
 thresh = 1/16;
-solenoidalmix = 1;
+solenoidalmix = 0;
 
 
 % Initialization
@@ -53,14 +56,14 @@ n = length(y);
 % Adaptive rank selection for low-rank approximation
 [U, Sval, ~] = svd(full(S0), 'econ');
 eigvals = diag(Sval);
-threshold = 0.01 * max(eigvals); % Retain components contributing >1% of max eigenvalue
+threshold = varpercthresh * max(eigvals); % Retain components contributing >1% of max eigenvalue
 k = sum(eigvals > threshold);
 k = max(k, length(m0)); % Ensure a minimum rank for stability
 
 % initialization of V
-V = U(:, 1:k) * diag(sqrt(eigvals(1:k)));
-D = diag(diag(S0) - sum(V.^2, 2));
-
+V  = U(:, 1:k) * diag(sqrt(eigvals(1:k)));
+D  = diag(diag(S0) - sum(V.^2, 2));
+V0 = (V*V')+D; 
 %k = min(10, length(m)); % Rank for low-rank covariance approximation
 %V = randn(length(m), k); % Low-rank component
 %D = diag(S0); % Diagonal component
@@ -85,9 +88,9 @@ for iter = 1:maxIter
     residuals = y - y_pred;
     
     % Robust variance update using Huber loss
-    delta = 1.5;
-    huber_residuals = residuals;
-    huber_residuals(abs(residuals) > delta) = delta * sign(residuals(abs(residuals) > delta));
+    %delta = 1.5;
+    %huber_residuals = residuals;
+    %huber_residuals(abs(residuals) > delta) = delta * sign(residuals(abs(residuals) > delta));
 
     nu = 3; % Degrees of freedom for t-distribution
     sigma2 = max(epsilon, (residuals.^2 + beta) ./ (nu + residuals.^2 / 2));
@@ -105,10 +108,30 @@ for iter = 1:maxIter
     H_elbo = H + H_prior;
     g_elbo = J' * diag(1 ./ sigma2) * residuals - H_prior * (m - m0);
     
-    % Low-rank covariance update
+    % % Low-rank covariance update
     [U, Sval, ~] = svd(H_elbo, 'econ');
     V = U(:, 1:k) * sqrt(Sval(1:k, 1:k));
     D = diag(diag(H_elbo) - sum(V.^2, 2));
+
+    % % Low-rank factor update with adaptive rank selection (precision low-rank)
+    % [U, Sval] = svd(H_elbo, 'econ');
+    % lambda = diag(Sval);
+    % 
+    % % re-pick k using the same criterion as init (percent of max eigenvalue)
+    % k_new = sum(lambda >= varpercthresh * lambda(1));
+    % k_min = 1;                 % (optional) floor
+    % k_max = numel(m);          % (optional) cap
+    % k = max(k_min, min(k_new, k_max));
+    % 
+    % % build V and D (representing precision H ≈ VV' + diag(D))
+    % V = U(:, 1:k) * sqrt(Sval(1:k, 1:k));
+    % D = diag(diag(H_elbo) - sum(V.^2, 2));
+    % 
+    % % enforce positivity of D to keep the preconditioner/logdet well-defined
+    % dmin = 1e-8;
+    % D = max(D, dmin);
+
+
     
     % Update  using preconditioned CG
     try
@@ -122,6 +145,13 @@ for iter = 1:maxIter
         if flag ~= 0 || relres > 1e-2  % Conservative threshold
             fprintf('PCG failed to converge or result is unreliable (relres = %.2e). Reverting update.\n', relres);
             dm = zeros(size(m));  % Or damp it heavily
+
+            % one final try at chol with attempt to make H posdef
+            try
+                L = chol(makeposdef(H_elbo ), 'lower');
+                dm = L' \ (L \ g_elbo);
+            end
+
         end
         
         % dampen so it doesn't run away
@@ -318,6 +348,61 @@ D = D_best;
 logL = best_elbo;
 
 end
+
+
+function KL = kl_q_p_precision(m, L_Sig, m0, S0)
+% KL(q||p) with q = N(m, Σ), p = N(m0, S0).
+% L_Sig: lower Cholesky of Σ (i.e., Σ = L_Sig * L_Sig')
+% Here we only have H = Σ^{-1} Cholesky (L_H). If you pass L_H (lower),
+% set L_Sig = inv(L_H) via triangular solves — BUT we can avoid forming L_Sig
+% by computing terms directly from H using the wrapper below.
+error('Use kl_q_p_from_H instead (more efficient).');
+end
+
+function KL = kl_q_p_from_H(m, L_H, m0, S0)
+% KL(q||p) with q = N(m, Σ), Σ^{-1} = H, L_H lower-Cholesky of H.
+% Computes: 0.5*( tr(S0^{-1} Σ) + (m-m0)' S0^{-1} (m-m0) - d + log|S0| - log|Σ| )
+    d = length(m);
+    % Prior precision and log|S0|
+    [R0,p0] = chol(S0);  if p0>0, error('S0 not PD'); end
+    logdetS0 = 2*sum(log(diag(R0)));
+    H0 = (R0 \ (R0' \ eye(d)));        % S0^{-1} via solves
+
+    % log|Σ| = - log|H| with H = L_H*L_H'
+    logdetSigma = -2*sum(log(diag(L_H)));
+
+    % trace term: trace( H0 * Σ ) = trace( (L_H \ (L_H' \ H0)) )
+    T = L_H \ (L_H' \ H0);
+    tr_term = trace(T);
+
+    dm = m - m0;
+    quad_term = dm' * H0 * dm;
+
+    KL = 0.5 * ( tr_term + quad_term - d + (logdetS0 - logdetSigma) );
+end
+
+function KL = kl_between_posteriors_precision(m2, L_H2, m1, L_H1)
+% KL( N(m2, Σ2) || N(m1, Σ1) ), with Σi^{-1} = Hi, L_Hi lower Cholesky of Hi.
+% Formula uses precision factors only.
+    d = length(m1);
+    % log|Σi| = -log|Hi|
+    logdetSig1 = -2*sum(log(diag(L_H1)));
+    logdetSig2 = -2*sum(log(diag(L_H2)));
+
+    % trace( Σ1^{-1} Σ2 ) = trace( H1 * Σ2 ) = trace( L_H2 \ (L_H2' \ H1) )
+    % Build H1 = L_H1 * L_H1'
+    H1 = L_H1 * L_H1';
+    T  = L_H2 \ (L_H2' \ H1);
+    tr_term = trace(T);
+
+    dm = m2 - m1;
+    % (m1 - m2)' Σ2^{-1} (m1 - m2) = dm' * H2 * dm, H2 = L_H2*L_H2'
+    Hdmdm = (L_H2' * dm);
+    quad_term = Hdmdm' * Hdmdm;
+
+    KL = 0.5 * ( tr_term + quad_term - d + (logdetSig1 - logdetSig2) );
+end
+
 
 function K = computeSmoothCovariance(x, lengthScale)
     n = length(x);

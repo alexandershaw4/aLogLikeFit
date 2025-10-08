@@ -35,6 +35,7 @@ classdef aFitDCM < handle
         histp
         VV
         dfdp
+        active_log
     end
     
     methods
@@ -312,6 +313,48 @@ classdef aFitDCM < handle
             obj.Ep = spm_unvec(spm_vec(P),obj.DD.M.pE);
 
         end
+        
+
+        function aloglikVLtherMoG(obj,maxit,K)
+
+            if nargin < 2 || isempty(maxit)
+                maxit = 32;
+            end
+
+            if nargin < 3
+                K = 5;
+            end
+
+            %fun = @(P,M) spm_vec(obj.DCM.M.IS(spm_unvec(P,obj.DCM.M.pE),obj.DCM.M,obj.DCM.xU));
+
+            x0  = obj.opts.x0(:);
+            fun = @(varargin)obj.wrapdm(varargin{:});
+
+            %K = 5;
+
+            %x0 = spm_vec(obj.DCM.M.pE);
+            M  = obj.DCM.M;
+            V  = diag(obj.opts.V );
+            y  = spm_vec(obj.DCM.xY.y);%[real(spm_vec(obj.DCM.xY.y)); imag(spm_vec(obj.DCM.xY.y))];
+
+            opts = struct('K',K,'learn_offsets',true,'learn_weights',true, ...
+              'share_sigma',true,'plots',1);
+        
+            opts.alpha0 = 0.3*ones(1,K);
+
+            [obj.X, obj.VV, obj.D, obj.F] = fitVL_ThermoMoG(y, fun, x0, V, maxit, 1e-6, opts);
+
+            [~, P] = fun(spm_vec(obj.X));
+            obj.Ep = spm_unvec(spm_vec(P),obj.DD.M.pE);
+            %obj.V = obj.CP;
+            %obj.CP = obj.CP * obj.CP' + obj.D;
+            
+            %V = obj.VV;
+            
+            obj.CP = pinv( (obj.VV*obj.VV') + obj.D);
+
+
+        end
 
         function aloglikVLtherm(obj,maxit,plots)
 
@@ -344,8 +387,13 @@ classdef aFitDCM < handle
             %obj.CP = obj.CP * obj.CP' + obj.D;
             
             %V = obj.VV;
+
+            % V, D approximate PRECISION: H ≈ V*V' + diag(D)
+            Dinv  = spdiags(1./diag(obj.D), 0, size(obj.D,1), size(obj.D,1));
+            Mid   = eye(size(obj.VV,2)) + obj.VV'*(Dinv*obj.VV);        % k×k
+            obj.CP = Dinv - Dinv*obj.VV*(Mid \ (obj.VV'*Dinv));     % ≈ posterior covariance
             
-            obj.CP = pinv( (obj.VV*obj.VV') + obj.D);
+            %obj.CP = pinv( (obj.VV*obj.VV') + obj.D);
 
             % Ainv = diag(1 ./ diag(obj.D));
             % M = eye(size(V,2)) + V' * Ainv * V;
@@ -354,6 +402,113 @@ classdef aFitDCM < handle
 
 
         end
+
+        function aloglikVLtherm_active(obj,maxit,plots)
+
+            if nargin < 2 || isempty(maxit)
+                maxit = 32;
+            end
+
+            if nargin < 3
+                plots = 1;
+            end
+
+            %fun = @(P,M) spm_vec(obj.DCM.M.IS(spm_unvec(P,obj.DCM.M.pE),obj.DCM.M,obj.DCM.xU));
+
+            x0  = obj.opts.x0(:);
+            fun = @(varargin)obj.wrapdm(varargin{:});
+
+            %x0 = spm_vec(obj.DCM.M.pE);
+            M  = obj.DCM.M;
+            V  = diag(obj.opts.V );
+            y  = spm_vec(obj.DCM.xY.y);%[real(spm_vec(obj.DCM.xY.y)); imag(spm_vec(obj.DCM.xY.y))];
+
+            % [m, V, D, logL, iter, sigma2, allm]
+           % [obj.X, obj.VV, obj.D, obj.F,~,~,obj.allp,obj.dfdp] = fitVariationalLaplaceThermo(y, fun, x0, V, maxit, 1e-6,plots);
+
+
+           [obj.X, obj.VV, obj.D, obj.F,~,~,obj.allp,obj.dfdp, obj.active_log] = ...
+               fitVariationalLaplaceThermo_active( ...
+               y, fun, x0, V, maxit, 1e-6,plots, 0.01, ...
+               'grad', 'topk', 10, 1, 0);
+
+           % y, f, m0, S0, 128, 1e-6, 1, 0.01, 'zpost', 'threshold', 1.5, 1, 0);
+
+           % Variational Laplace with "active-set" updates: only move parameters with big effects.
+           % - effect_mode: 'zstep' (default) | 'grad' | 'zpost'
+           % - selection:   'topK' | 'threshold'
+           % - sel_param:   K (for 'topK') OR tau (for 'threshold')
+           % - reeval_every: re-evaluate the active set every N iters (default 1 = every iter)
+           % - lambda_soft: optional lasso-like soft-threshold toward prior mean (default 0 = off)
+
+
+            [~, P] = fun(spm_vec(obj.X));
+            obj.Ep = spm_unvec(spm_vec(P),obj.DD.M.pE);
+            %obj.V = obj.CP;
+            %obj.CP = obj.CP * obj.CP' + obj.D;
+
+            %V = obj.VV;
+
+            % V, D approximate PRECISION: H ≈ V*V' + diag(D)
+            Dinv  = spdiags(1./diag(obj.D), 0, size(obj.D,1), size(obj.D,1));
+            Mid   = eye(size(obj.VV,2)) + obj.VV'*(Dinv*obj.VV);        % k×k
+            obj.CP = Dinv - Dinv*obj.VV*(Mid \ (obj.VV'*Dinv));     % ≈ posterior covariance
+
+            %obj.CP = pinv( (obj.VV*obj.VV') + obj.D);
+
+            % Ainv = diag(1 ./ diag(obj.D));
+            % M = eye(size(V,2)) + V' * Ainv * V;
+            % invM = inv(M);  % small matrix
+            % obj.CP = Ainv - Ainv * V * invM * V' * Ainv;
+
+
+        end
+
+
+        function aloglikVLthermFE(obj,maxit,plots)
+
+            if nargin < 2 || isempty(maxit)
+                maxit = 32;
+            end
+
+            if nargin < 3
+                plots = 1;
+            end
+
+            %fun = @(P,M) spm_vec(obj.DCM.M.IS(spm_unvec(P,obj.DCM.M.pE),obj.DCM.M,obj.DCM.xU));
+
+            x0  = obj.opts.x0(:);
+            fun = @(varargin)obj.wrapdm(varargin{:});
+
+            %x0 = spm_vec(obj.DCM.M.pE);
+            M  = obj.DCM.M;
+            V  = diag(obj.opts.V );
+            y  = spm_vec(obj.DCM.xY.y);%[real(spm_vec(obj.DCM.xY.y)); imag(spm_vec(obj.DCM.xY.y))];
+
+            % [m, V, D, logL, iter, sigma2, allm] 
+            [obj.X, obj.VV, obj.D, obj.F,~,~,obj.allp,obj.dfdp] = fitVariationalLaplaceThermoFE(y, fun, x0, V, maxit, 1e-6,plots);
+            %[obj.X, obj.CP, obj.F] = fitVariationalLaplaceThermo4thOrder(y, fun, x0, V, maxit, 1e-6);
+            %[obj.X, obj.CP, obj.F] = fitVariationalLaplaceNF(y, fun, x0, V, maxit, 1e-6);
+
+            [~, P] = fun(spm_vec(obj.X));
+            obj.Ep = spm_unvec(spm_vec(P),obj.DD.M.pE);
+            %obj.V = obj.CP;
+            %obj.CP = obj.CP * obj.CP' + obj.D;
+            
+            %V = obj.VV;
+            
+            Dinv  = spdiags(1./diag(obj.D), 0, size(obj.D,1), size(obj.D,1));
+            Mid   = eye(size(obj.VV,2)) + obj.VV'*(Dinv*obj.VV);        % k×k
+            obj.CP = Dinv - Dinv*obj.VV*(Mid \ (obj.VV'*Dinv));     % ≈ posterior covariance
+
+            % Ainv = diag(1 ./ diag(obj.D));
+            % M = eye(size(V,2)) + V' * Ainv * V;
+            % invM = inv(M);  % small matrix
+            % obj.CP = Ainv - Ainv * V * invM * V' * Ainv;
+
+
+        end
+
 
         function aloglikVLtherm_cov(obj,maxit,plots)
 
@@ -376,7 +531,7 @@ classdef aFitDCM < handle
             y  = spm_vec(obj.DCM.xY.y);%[real(spm_vec(obj.DCM.xY.y)); imag(spm_vec(obj.DCM.xY.y))];
 
             % [m, V, D, logL, iter, sigma2, allm] 
-            [obj.X, obj.VV, obj.D, obj.F,~,~,obj.allp] = fitVL_LowRankNoise(y, fun, x0, V, maxit, 1e-6,plots);
+            [obj.X, obj.VV, obj.D, obj.F,~,~,obj.allp] = fitVL_LowRankNoise(y, fun, x0, V, maxit, 1e-7,plots);
             %[obj.X, obj.CP, obj.F] = fitVariationalLaplaceThermo4thOrder(y, fun, x0, V, maxit, 1e-6);
             %[obj.X, obj.CP, obj.F] = fitVariationalLaplaceNF(y, fun, x0, V, maxit, 1e-6);
 
