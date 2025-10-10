@@ -24,6 +24,10 @@ peb_plot_lambda(M)
 
 % Example density ribbon for one coefficient (say X2):
 Bsamp = peb_sample_beta(M, 5000);
-figure; histogram(Bsamp(:,3), 60, 'Normalization','pdf'); grid on
-title('Posterior samples for \beta_{X2}')
-xlabel('\beta'); ylabel('density')
+figure; 
+for i = 1:size(Bsamp,2)-1
+    subplot(1,size(Bsamp,2)-1,i)
+    histogram(Bsamp(:,i+1), 60, 'Normalization','pdf'); grid on
+    title(sprintf('Posterior samples for beta_{X%d}',i))
+    xlabel('\beta'); ylabel('density')
+end
