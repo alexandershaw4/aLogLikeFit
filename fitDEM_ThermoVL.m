@@ -77,7 +77,10 @@ xgc0_mu = getd(opts,'pE_x0',zeros((p+1)*nx,1));
 xgc0_C  = getd(opts,'pC_x0',eye((p+1)*nx)*1e1);
 
 % precisions
-ly = getd(opts,'lambda_y0', 1/max(var(y,0,1),1e-6) ); % scalar or 1xny (we use scalar)
+%ly = getd(opts,'lambda_y0', 1/max(var(y,0,1),1e-6) ); % scalar or 1xny (we use scalar)
+v_all = var(y(:));                          % scalar variance over all entries
+ly    = getd(opts,'lambda_y0', 1/max(v_all, 1e-6));
+
 if numel(ly) > 1, ly = mean(ly); end
 lx = getd(opts,'lambda_x0', 1.0);
 
