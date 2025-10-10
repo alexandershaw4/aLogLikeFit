@@ -1,5 +1,5 @@
 function [POST, TRACE] = fitDEM_ThermoVL(y, f, g, x0, theta0, opts)
-% fitDEM_ThermoVL  —  DEM-style D/E/M using your thermoVL flavour
+% fitDEM_ThermoVL  —  DEM-style D/E/M using thermoVL
 %
 % DEM over nonlinear state-space:
 %   x' = f(x, v, theta) + w

@@ -21,7 +21,12 @@ function peb_plot_betas(M, names)
     xline(0,'k:'); set(gca,'YDir','reverse','YTick',y,'YTickLabel',names);
     xlabel('\beta (posterior mean ± 95% CI)'); ylabel('feature');
     title('Posterior coefficients'); grid on
+    s = get(gca,'ylim');
+    ylim([s(1)-1 s(2)+1]);
+    set(findall(gcf,'-property','FontSize'),'FontSize',16)
+
 end
+
 
 % % Example:
 % names = {'intercept','X1','X2','X3','X4','X5'};
