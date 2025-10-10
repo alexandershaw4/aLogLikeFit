@@ -1,63 +1,46 @@
 function [POST, TRACE] = fitDEM_ThermoVL(y, f, g, x0, theta0, opts)
 % fitDEM_ThermoVL  —  DEM-style D/E/M using thermoVL
 %
-% DEM over nonlinear state-space:
-%   x' = f(x, v, theta) + w
-%   y  = g(x, v, theta) + z
+% Nonlinear state-space:
+%   x' = f(x, theta) + w,   y = g(x, theta) + z
 %
-% Generalised coordinates (order p):
-%   \tilde{x} = [x, x', x'', ...], \tilde{y} likewise (estimated from data)
-%   Motion error:   eps_x = D*\tilde{x} - \tilde{f}(\tilde{x},theta)
-%   Output error:   eps_y = \tilde{y} - \tilde{g}(\tilde{x},theta)
+% Generalised coords (order p):
+%   \tilde{x} = [x, x', x'', ...],   \tilde{y} likewise (estimated)
+% Motion error: eps_x = D*\tilde{x} - \tilde{f}(\tilde{x},theta)
+% Output error: eps_y = \tilde{y} - \tilde{g}(\tilde{x},theta)
 %
-% D-step: update \tilde{x}_t (mode path) by Gauss–Newton on free-action
-% E-step: update theta using accumulated curvature over t
-% M-step: update precisions (lambda_y, lambda_x) with Gamma-posteriors
+% DEM cycle:
+%   D-step: update \tilde{x}_t via Gauss–Newton on free-action
+%   E-step: update theta via accumulated curvature (low-rank precision)
+%   M-step: update precisions (lambda_y, lambda_x) via Gamma posteriors
 %
 % Inputs
-%   y        [T x ny]   observations over time
-%   f        @(x,theta) -> nx x 1   (state flow; v handled inside if needed)
-%   g        @(x,theta) -> ny x 1   (observation map)
+%   y        [T x ny]
+%   f        @(x,theta) -> nx x 1
+%   g        @(x,theta) -> ny x 1
 %   x0       [nx x 1]   initial state mean
 %   theta0   [np x 1]   initial parameter mean
-%   opts     struct with fields (all optional, sensible defaults provided):
-%       .dt              sample period (default 1)
-%       .p               generalised order (default 2 => 0,1,2)
-%       .Dx_iters        D-step inner iters per time (default 2)
-%       .outer_iters     DEM cycles (D over all t, then E, then M) (default 8)
-%       .gamma_y         temporal weights for output GC (default 1.0)
-%       .gamma_x         temporal weights for state GC  (default 1.0)
-%       .lambda_y0       obs precision init (default 1/var(y))
-%       .lambda_x0       state motion precision init (default 1)
-%       .pE_theta        prior mean for theta (default = theta0)
-%       .pC_theta        prior cov for theta (default = eye*1e1)
-%       .pE_x0           prior mean for initial GC state (default zeros)
-%       .pC_x0           prior cov for initial GC state (default eye*1e1)
-%       .varpercthresh   low-rank threshold for parameter Hessian (default .01)
-%       .max_rank_theta  cap for low-rank (default = numel(theta0))
-%       .plot            0/1 quick progress plots (default 0)
+%   opts     (optional) fields:
+%       .dt, .p (default 2), .py (default 0; output GC off)
+%       .Dx_iters (default 2), .outer_iters (default 8)
+%       .gamma_y/x (defaults 1), .lambda_y0 (default 1/var(y(:)))
+%       .lambda_x0 (default 10), .pE_theta/.pC_theta
+%       .pE_x0/.pC_x0, .varpercthresh, .max_rank_theta
+%       .burnin_fix_ly (default 3), .burnin_fix_lx (default same as ly)
+%       .lambda_x_target (default 10), .lambda_x_ramp (default 1.8)
+%       .plot (0/1)
 %
 % Outputs
-%   POST struct:
-%       .x_path      [T x nx]  posterior mode of state path (0th order)
-%       .xgc_path    [T x (p+1)*nx] posterior mode in generalised coords
-%       .theta_mean  [np x 1]
-%       .theta_V, .theta_D   low-rank + diag precision factors for theta Hessian
-%       .lambda_y, .lambda_x  precisions (obs & motion)
-%   TRACE struct:
-%       .Fa          free-action trace per outer iter
-%       .sumsq_y     sum of output error squares per iter
-%       .sumsq_x     sum of motion error squares per iter
-%       .theta_hist  parameter means over iterations
-%       .lambda_hist precisions over iterations
+%   POST: x_path, xgc_path, theta_mean, theta_V/D, lambda_y/x
+%   TRACE: Fa, sumsq_y/x, theta_hist, lambda_hist
 %
-% AS2025
+% AS2025 (with stability & λx ramp tweaks)
 
 % -------------------- defaults --------------------
 if nargin < 6, opts = struct; end
 dt      = getd(opts,'dt',1.0);
 p       = getd(opts,'p',2);
-py   = getd(opts,'py',0);
+py      = getd(opts,'py',0);              % output GC OFF by default
 
 Dx_it   = getd(opts,'Dx_iters',2);
 outerIt = getd(opts,'outer_iters',8);
@@ -77,12 +60,14 @@ xgc0_mu = getd(opts,'pE_x0',zeros((p+1)*nx,1));
 xgc0_C  = getd(opts,'pC_x0',eye((p+1)*nx)*1e1);
 
 % precisions
-%ly = getd(opts,'lambda_y0', 1/max(var(y,0,1),1e-6) ); % scalar or 1xny (we use scalar)
-v_all = var(y(:));                          % scalar variance over all entries
-ly    = getd(opts,'lambda_y0', 1/max(v_all, 1e-6));
+v_all = var(y(:));                                            % scalar
+ly    = getd(opts,'lambda_y0', 1/max(v_all, 1e-6));           % init obs precision
+lx    = getd(opts,'lambda_x0', 10.0);                         % stronger dynamics by default
 
-if numel(ly) > 1, ly = mean(ly); end
-lx = getd(opts,'lambda_x0', 1.0);
+burnin_fix_ly    = getd(opts,'burnin_fix_ly',3);
+burnin_fix_lx    = getd(opts,'burnin_fix_lx',burnin_fix_ly);
+lambda_x_target  = getd(opts,'lambda_x_target',10);
+lambda_x_ramp    = getd(opts,'lambda_x_ramp',1.8);            % multiplicative ramp per iter
 
 % low-rank threshold for param Hessian
 varthr = getd(opts,'varpercthresh',0.01);
@@ -97,22 +82,18 @@ wx = (gamX.^((0:p )))./(dt.^(0:p )); wx = wx / max(wx);
 % derivative operator D on generalised coordinates (truncated shift)
 Dop = kron( eye(p+1), zeros(nx) );
 for k=1:p
-    block = eye(nx);
     row   = (k-1)*nx + (1:nx);
-    col   = k*nx     + (1:nx);
-    Dop(row, col) = block;
+    col   =  k   *nx + (1:nx);
+    Dop(row, col) = eye(nx);
 end
 
-% Derivative operator for outputs (same truncated shift, but ny-sized)
-DopY = kron(eye(p+1), zeros(ny));
+% (Output DopY kept for completeness; not used when py=0)
+DopY = kron(eye(p+1), zeros(ny)); %#ok<NASGU>
 for k = 1:p
     row = (k-1)*ny + (1:ny);
     col =  k   *ny + (1:ny);
     DopY(row,col) = eye(ny);
 end
-
-% last rows stay zero; Dop: [(x' <- xdot), (x'' <- xddot), ...]
-% size: (p+1)nx x (p+1)nx
 
 % precompute generalised observations from data
 Ygc = generalise_observation(y, py, dt); % [T x (p+1)*ny]
@@ -127,11 +108,10 @@ Fa_trace    = zeros(1,outerIt);
 sumsq_y     = zeros(1,outerIt);
 sumsq_x     = zeros(1,outerIt);
 
-% initial GC state (just tile dynamics from x0)
+% initial GC state (rough init via chaining f and J_f)
 xgc = zeros((p+1)*nx,1);
 xgc(1:nx) = x0(:);
-% Fill higher orders by chaining f and its Jacobian (rough init)
-[xgc] = seed_generalised_state(xgc, theta, f, p, nx);
+xgc = seed_generalised_state(xgc, theta, f, p, nx);
 
 % -------------------- DEM outer loop --------------------
 for it = 1:outerIt
@@ -139,22 +119,46 @@ for it = 1:outerIt
     ss_y = 0; ss_x = 0;  % accumulate squares for M-step
     for t = 1:Tx
         ygc_t = Ygc(t,:).';      % (p+1)*ny x 1
-        % carry previous xgc as init (causal filter)
-        if t > 1
-            xgc = xgc_path(t-1,:).';
-        end
+        if t > 1, xgc = xgc_path(t-1,:).'; end
+
+        % ---- observation seeding: reduce y-residual at 0th order (cheap LS) ----
+Xtmp = reshape(xgc, nx, p+1);
+x0t  = Xtmp(:,1);
+
+% ensure column shapes
+y0 = ygc_t(1:ny);      y0 = y0(:);
+g0 = g(x0t, theta);    g0 = g0(:);
+
+% Jacobian (ny x nx)
+Gy = jacobian_fd(@(x) g(x,theta), x0t);
+
+% guard against any row/shape quirks
+m = size(Gy,1);              % rows of Gy == output dim of g
+y0 = y0(1:m);
+g0 = g0(1:m);
+
+% damped dual normal equations (works for any ny,nx)
+reg = 1e-3;
+A   = Gy;           % m x nx
+b   = y0 - g0;      % m x 1
+dx0 = A.' * ((A*A.' + reg*eye(m)) \ b);   % nx x 1
+
+% clip step
+mx = 2.0; 
+if norm(dx0) > mx, dx0 = dx0*(mx/norm(dx0)); end
+
+Xtmp(:,1) = x0t + dx0;
+xgc = Xtmp(:);
+% ------------------------------------------------------------------------
+
 
         % inner recognition updates for this time point
         for k = 1:Dx_it
-
-            % --- D-step ------------------------
-
             % residual vector r = [sqrt(ly)*W_y*eps_y ; sqrt(lx)*W_x*eps_x]
             [r, epsy, epsx] = residual_gc(xgc, ygc_t, theta, f, g, Dop, wy, wx, nx, ny, p, py, ly, lx);
             Jx = jacobian_fd(@(xz) residual_gc(xz, ygc_t, theta, f, g, Dop, wy, wx, nx, ny, p, py, ly, lx), xgc);
 
-
-            % optional weak prior tying to initial GC (only at t=1)
+            % weak prior tying to initial GC (only at t=1)
             if t == 1
                 Hprior_x = (xgc0_C \ eye(size(xgc0_C)));
                 gprior_x = -Hprior_x*(xgc - xgc0_mu);
@@ -166,13 +170,14 @@ for it = 1:outerIt
             Hx = (Jx.'*Jx) + blkdiag(Hprior_x);  % Gauss–Newton Hessian
             gx = (Jx.'*r)  + gprior_x;           % gradient
 
+            % modest ridge for stability (let data term speak)
             ridge = 1e-3 * trace(Hx)/max(1,numel(Hx));
             Hx = Hx + ridge*eye(size(Hx));
 
             % damped solve
             dm = solve_posdef(Hx, gx);
 
-            % ---- Armijo-style line search ----
+            % ---- simple Armijo / backoff ----
             alpha = 1.0;
             xgc_try = xgc + alpha*dm;
             [r_try, ~, ~] = residual_gc(xgc_try, ygc_t, theta, f, g, Dop, wy, wx, nx, ny, p,py, ly, lx);
@@ -188,37 +193,30 @@ for it = 1:outerIt
             end
 
             xgc = xgc_try;
-
-            % trust region
-            %alpha = min(1, 1/(1+norm(dm)));
-            %xgc = xgc + alpha*dm;
         end
 
         xgc_path(t,:) = xgc.';
         x_path(t,:)   = xgc(1:nx).';
 
         % Accumulate squared errors for M-step
-        ss_y = ss_y + sum(epsy.^2);
+        ss_y = ss_y + sum(epsy(1:ny).^2); % 0th-order only for ly
         ss_x = ss_x + sum(epsx.^2);
     end
 
-    % --- E-step: update theta (one GN step with low-rank precision) ---
-    % accumulate over time: r_t(theta), J_theta_t
+    % --- E-step: update theta (GN with low-rank precision) ---
     gth = zeros(np,1);
     Hth = zeros(np,np);
     for t = 1:Tx
         xgc_t = xgc_path(t,:).';
         ygc_t = Ygc(t,:).';
-        % residual function of theta
-        %rfun = @(th) residual_gc(xgc_t, ygc_t, th, f, g, Dop, wy, wx);
         rfun = @(th) residual_gc(xgc_t, ygc_t, th, f, g, Dop, wy, wx, nx, ny, p, py, ly, lx);
         rt   = rfun(theta);
         Jt   = jacobian_fd(rfun, theta);
-
         Hth  = Hth + (Jt.'*Jt);
         gth  = gth + (Jt.'*rt);
     end
-    % add parameter prior
+
+    % parameter prior
     Hth_prior = (pC_theta \ eye(size(pC_theta)));
     gth_prior = -Hth_prior*(theta - pE_theta);
 
@@ -235,51 +233,45 @@ for it = 1:outerIt
     k   = min(k,kmax);
     Vth = U(:,1:k)*sqrt(Sv(1:k,1:k));
     Dth = diag(diag(Hth_elbo) - sum(Vth.^2,2));
-    % robust solve
-    %dth = solve_posdef(Hth_elbo, gth_elbo);
-    %theta = theta + dth;
+
+    % robust solve + cautious step with clipping
     dth = solve_posdef(Hth_elbo, gth_elbo);
-    alpha_theta = 1e-2;   % damp parameter step
+    alpha_theta = 3e-3;        % smaller step
+    max_step    = 2.0;         % L2 clip
+    nrm = norm(dth); if nrm > max_step, dth = dth*(max_step/nrm); end
     theta = theta + alpha_theta * dth;
 
-
     % --- M-step: update precisions (Gamma posterior updates) ---
-    % Use ML/Gamma-regularised updates; weak prior (nu,beta)
+    % weak priors (can be strengthened if needed)
     nu_y = 1e-2;  beta_y = 1e-2;
     nu_x = 1e-2;  beta_x = 1e-2;
 
-    % Recompute sum of squares using updated theta (optional small pass)
+    % recompute with updated theta for sums of squares
     ss_y = 0; ss_x = 0;
     for t = 1:Tx
         xgc_t = xgc_path(t,:).';  ygc_t = Ygc(t,:).';
         [~, epsy, epsx] = residual_gc(xgc_t, ygc_t, theta, f, g, Dop, wy, wx, nx, ny, p, py, ly, lx);
-        % use ONLY 0th-order obs residual for ly (first ny entries)
-        ss_y = ss_y + sum(epsy(1:ny).^2);
+        ss_y = ss_y + sum(epsy(1:ny).^2);  % 0th order only
         ss_x = ss_x + sum(epsx.^2);
     end
 
-    dim_y = Tx * (p+1)*ny;
-    dim_x = Tx * (p+1)*nx;
+    dim_y0 = Tx * ny;             % only 0th order contributes to ly
+    dim_x  = Tx * (p+1)*nx;
 
-    %ly = (nu_y + dim_y) / (beta_y + ss_y + 1e-12);
-    %lx = (nu_x + dim_x) / (beta_x + ss_x + 1e-12);
+    % freeze during burn-in
+    if it > burnin_fix_ly
+        ly = max(1e-6, min(1e6, (nu_y + dim_y0) / (beta_y + ss_y + 1e-12)));
+    end
+    if it > burnin_fix_lx
+        lx = max(1e-6, min(1e6, (nu_x + dim_x ) / (beta_x + ss_x + 1e-12)));
+    end
 
-    ly_min = getd(opts,'ly_min',1e-6);
-    nu_y   = 1e-2;  beta_y = 1e-2;
-    dim_y0 = Tx * ny;
-
-    ly = (nu_y + dim_y0) / (beta_y + ss_y + 1e-12);
-    ly = max(ly, ly_min);
-
-    % (lx stays as before; its "dim" is Tx*(p+1)*nx because all x-orders are used)
-    dim_x = Tx * (p+1)*nx;
-    lx = (nu_x + dim_x) / (beta_x + ss_x + 1e-12);
-
-    ly = max(1e-6, min(1e6, (nu_y + dim_y0) / (beta_y + ss_y + 1e-12)));
-    lx = max(1e-6, min(1e6, (nu_x + dim_x) / (beta_x + ss_x + 1e-12)));
+    % --- gentle ramp AFTER burn-in: reintroduce dynamics progressively ---
+    if it > burnin_fix_lx
+        lx = min(lambda_x_target, lx * lambda_x_ramp);
+    end
 
     % --- bookkeeping & free-action (approximate) ---
-    % Fa ~ -0.5*( ly*ss_y + lx*ss_x ) + log det terms/prior terms (omitted consts)
     Fa = -0.5*( ly*ss_y + lx*ss_x ) ...
          -0.5*((theta - pE_theta).'*Hth_prior*(theta - pE_theta)) ...
          -0.5*((xgc_path(1,:).' - xgc0_mu).'*((xgc0_C \ eye(size(xgc0_C)))*(xgc_path(1,:).' - xgc0_mu)));
@@ -307,15 +299,22 @@ for it = 1:outerIt
         % --- (a) observed vs predicted ---
         nexttile(1); cla;
         tspan = (0:Tx-1)*dt;
+
         % predicted observation from current x_path
         yhat = zeros(Tx,ny);
         for tt = 1:Tx
             yhat(tt,:) = g(xgc_path(tt,1:nx).',theta);
         end
-        plot(tspan,y,'k','DisplayName','Observed'); hold on;
-        plot(tspan,yhat,'r','DisplayName','Predicted'); hold off;
-        title('Fit to data'); xlabel('time'); ylabel('y');
-        legend show;
+
+        yy   = y(:,1);
+        yhat1= yhat(:,1);
+
+        delete(findobj(gca,'Type','Legend')); % paranoia
+        h1 = plot(tspan, yy,   'k-', 'LineWidth', 1.0); hold on;
+        h2 = plot(tspan, yhat1,'r-', 'LineWidth', 1.0);
+        lgd = legend([h1 h2], {'Observed','Predicted'}, 'Location','best');
+        set(lgd,'AutoUpdate','off');
+        title('Fit to data'); xlabel('Time'); ylabel('y');
 
         % --- (b) Free-action trace ---
         nexttile(2); cla;
@@ -337,9 +336,6 @@ for it = 1:outerIt
         title('Parameters');
         drawnow;
     end
-
-
-
 end
 
 % -------------------- outputs --------------------
@@ -369,7 +365,7 @@ end
 
 function [ygc_hat, epsy] = eps_y_gc(xgc, ygc, theta, g, wy, nx, ny, p, py)
     % Build ĝ̃ up to order py and form eps_y = W * ( ỹ - ĝ̃ )
-    X   = reshape(xgc, nx, p+1);   % now we know p
+    X   = reshape(xgc, nx, p+1);
     x0  = X(:,1);
     Yhat = zeros(ny, py+1);
 
@@ -420,12 +416,6 @@ function [xflow_hat, epsx] = eps_x_gc(xgc, theta, f, DopX, wx, nx, p)
     xflow_hat = fgc_vec;
 end
 
-function pp = p_from_len(L,nx)
-    % infer p from length of xgc and nx: L = (p+1)*nx
-    pp = (L / nx) - 1;
-end
-
-
 function J = jacobian_fd(fun, x)
     % central finite-difference Jacobian
     y0 = fun(x);
@@ -467,25 +457,11 @@ function [sol, info] = solve_posdef(H, g)
     info.lam = lam;
 end
 
-function nx = infer_nx_from_xgc(xgc)
-    % Guess nx from the assumption xgc is stacked (p+1)*nx
-    % We'll infer (p+1) by assuming it's at least 1 and nx<=length(xgc)
-    L = numel(xgc);
-    % choose smallest nx such that (L/nx) is integer and >=1
-    nx = L; 
-    for cand = 1:L
-        if mod(L,cand)==0
-            nx = cand; break;
-        end
-    end
-end
-
 function Xgc = generalise_observation(y, p, dt)
-    % Stack y, Dy, D2y, ... via simple finite differences (causal-ish)
+    % Stack y, Dy, D2y via simple finite differences (optionally smoothed)
     [T,ny] = size(y);
     Ygc = zeros(T,(p+1)*ny);
-    % 0th
-    Ygc(:,1:ny) = y;
+    Ygc(:,1:ny) = y;           % 0th order
     if p >= 1
         Dy = [diff(y)/dt; zeros(1,ny)];
         Ygc(:,ny+(1:ny)) = Dy;
@@ -494,7 +470,6 @@ function Xgc = generalise_observation(y, p, dt)
         D2y = [diff(Dy)/dt; zeros(1,ny)];
         Ygc(:,2*ny+(1:ny)) = D2y;
     end
-    % (can add Savitzky-Golay smoothing here if desired)
     Xgc = Ygc;
 end
 
@@ -510,6 +485,7 @@ function xgc = seed_generalised_state(xgc, theta, f, p, nx)
     end
     xgc = X(:);
 end
+
 function val = getd(s,field,default)
     if isfield(s,field) && ~isempty(s.(field)), val = s.(field); else, val = default; end
 end

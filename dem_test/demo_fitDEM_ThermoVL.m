@@ -53,13 +53,23 @@ opts.varpercthresh = 0.01;
 opts.max_rank_theta= numel(theta0);
 opts.plot          = 1;
 
+opts.burnin_fix_ly = 3;
+
 % function handles matching the required signatures:
 %   f(x,theta)->nx×1, g(x,theta)->ny×1
 f = @(x,theta) f_osc_nl(x,theta);
 g = @(x,theta) g_lin(x);
 
+% --- standardise y for well-scaled residuals ---
+muY = mean(y,1);  sdY = std(y,0,1);  sdY(sdY==0) = 1;
+ys  = (y - muY)./sdY;
+
+% use a *scalar* precision consistent with scaled data
+opts.lambda_y0 = 1;      % data ~ unit variance after z-scoring
+
+
 % ----- fit -----
-[POST, TRACE] = fitDEM_ThermoVL(y, f, g, x0_guess, theta0, opts);
+[POST, TRACE] = fitDEM_ThermoVL(ys, f, g, x0_guess, theta0, opts);
 
 % ----- quick report -----
 fprintf('\n=== Parameter recovery ===\n');
@@ -72,6 +82,14 @@ yhat = zeros(T,ny);
 for tt = 1:T
     yhat(tt,:) = g(POST.xgc_path(tt,1:nx).', POST.theta_mean);
 end
+
+% predicted on scaled space
+yhat_sc = zeros(T,1);
+for tt = 1:T
+    yhat_sc(tt,:) = g(POST.xgc_path(tt,1:nx).', POST.theta_mean);
+end
+% unscale for overlay
+yhat = yhat_sc.*sdY + muY;
 
 figure('Color','w','Name','Fit overlay');
 plot(tspan, y, 'k-', 'DisplayName','Observed'); hold on;
