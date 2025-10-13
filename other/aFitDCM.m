@@ -356,6 +356,44 @@ classdef aFitDCM < handle
 
         end
 
+        function aloglikVLthermBARD(obj,maxit,plots)
+
+            if nargin < 2 || isempty(maxit)
+                maxit = 32;
+            end
+
+            if nargin < 3
+                plots = 1;
+            end
+
+            %fun = @(P,M) spm_vec(obj.DCM.M.IS(spm_unvec(P,obj.DCM.M.pE),obj.DCM.M,obj.DCM.xU));
+
+            x0  = obj.opts.x0(:);
+            fun = @(varargin)obj.wrapdm(varargin{:});
+
+            %x0 = spm_vec(obj.DCM.M.pE);
+            M  = obj.DCM.M;
+            V  = diag(obj.opts.V );
+            y  = spm_vec(obj.DCM.xY.y);%[real(spm_vec(obj.DCM.xY.y)); imag(spm_vec(obj.DCM.xY.y))];
+
+            % No annealing (tau=1)
+            [obj.X, obj.VV, obj.D, obj.F,~,~,obj.allp,obj.dfdp] = fitVariationalLaplaceThermo_BayesARD(y, fun, x0, V, maxit, 1e-6,plots);
+
+            [~, P] = fun(spm_vec(obj.X));
+            obj.Ep = spm_unvec(spm_vec(P),obj.DD.M.pE);
+            %obj.V = obj.CP;
+            %obj.CP = obj.CP * obj.CP' + obj.D;
+            
+            %V = obj.VV;
+
+            % V, D approximate PRECISION: H ≈ V*V' + diag(D)
+            Dinv  = spdiags(1./diag(obj.D), 0, size(obj.D,1), size(obj.D,1));
+            Mid   = eye(size(obj.VV,2)) + obj.VV'*(Dinv*obj.VV);        % k×k
+            obj.CP = Dinv - Dinv*obj.VV*(Mid \ (obj.VV'*Dinv));     
+
+
+        end
+
         function aloglikVLtherm(obj,maxit,plots)
 
             if nargin < 2 || isempty(maxit)
