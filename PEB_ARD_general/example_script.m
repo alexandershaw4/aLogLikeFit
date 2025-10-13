@@ -29,6 +29,14 @@ yh  = yhat(idx);
 los = lo(idx);
 his = hi(idx);
 
+names = ['intercept' T.Properties.VariableNames]
+
+% Normal plots
+peb_plot_betas(M)
+peb_plot_beta_densities(M)
+peb_plot_lambda(M,names(M.kept_columns))
+
+
 % --- Plot 1: Sorted predictions with 95% PI ribbon + observed data ---
 figure('Name','PEB-ARD Prediction with Uncertainty','Color','w'); 
 subplot(1,2,1); hold on;

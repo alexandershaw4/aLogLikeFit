@@ -13,7 +13,7 @@ M = peb_ard_novar(y, X);
 [yhat, ~] = peb_ard_predict(X, M);
 
 fprintf('R² = %.3f\n', 1 - sum((y - yhat).^2)/sum((y - mean(y)).^2));
-disp('Estimated β:'); disp(M.beta);
+disp('Estimated β:'); disp(M.beta_ordered);
 disp('True β (approx, first five features):');
 disp([0; true_beta]);
 

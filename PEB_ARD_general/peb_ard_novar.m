@@ -198,6 +198,17 @@ M.y_mean = y_mean;
 M.y_std  = y_std;
 M.standardised = do_std;
 M.tie_lambdas  = tie_lam;
+
+M = peb_reorder_to_original(M, size(X,2));
+
+
+% % make ordering more explicit
+% M.beta_ordered = zeros(size(X,2),1);
+% M.beta_ordered(M.kept_columns) = M.beta;
+% 
+% M.beta_ordered_std = zeros(size(X,2),1);
+% M.beta_ordered_std(M.kept_columns) = M.beta_std;
+
 end
 
 % ----------------- helpers -----------------
