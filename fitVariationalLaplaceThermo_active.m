@@ -19,7 +19,7 @@ if nargin < 12 || isempty(reeval_every), reeval_every = 1;       end
 if nargin < 13 || isempty(lambda_soft),  lambda_soft  = 0;       end
 
 % --- call the base routine structure but inline its core loop so we can gate updates
-thresh = 1/16;              % your convergence criterion
+thresh = 1/32;              % your convergence criterion
 solenoidalmix = 0;
 m = m0(:); n = length(y);
 

@@ -36,6 +36,7 @@ classdef aFitDCM < handle
         VV
         dfdp
         active_log
+        trace
     end
     
     methods
@@ -377,7 +378,7 @@ classdef aFitDCM < handle
             y  = spm_vec(obj.DCM.xY.y);%[real(spm_vec(obj.DCM.xY.y)); imag(spm_vec(obj.DCM.xY.y))];
 
             % No annealing (tau=1)
-            [obj.X, obj.VV, obj.D, obj.F,~,~,obj.allp,obj.dfdp] = fitVariationalLaplaceThermo_BayesARD(y, fun, x0, V, maxit, 1e-6,plots);
+            [obj.X, obj.VV, obj.D, obj.F,~,~,obj.allp] = fitVariationalLaplaceThermo_BayesARD(y, fun, x0, V, maxit, 1e-6,plots);
 
             [~, P] = fun(spm_vec(obj.X));
             obj.Ep = spm_unvec(spm_vec(P),obj.DD.M.pE);
@@ -441,6 +442,68 @@ classdef aFitDCM < handle
 
         end
 
+        function aloglikVLtherm_struct(obj,maxit,plots)
+
+            if nargin < 2 || isempty(maxit)
+                maxit = 32;
+            end
+
+            if nargin < 3
+                plots = 1;
+            end
+
+            %fun = @(P,M) spm_vec(obj.DCM.M.IS(spm_unvec(P,obj.DCM.M.pE),obj.DCM.M,obj.DCM.xU));
+
+           
+            x0  = obj.opts.x0(:);
+            fun = @(varargin)obj.wrapdm(varargin{:});
+
+             p = numel(x0);
+            opts = struct;
+            opts.tau_sched      = [linspace(0.3,1,6), ones(1,24)];   % explore→settle
+            opts.useARD         = true;              % optional but recommended
+            opts.z_thresh       = 2.5;
+            opts.kappa_prune    = 0.0;               % prune if ΔF_keep ≤ 0
+            opts.kappa_add      = 3.0;               % only add strong candidates
+            opts.max_add_per_it = 2;
+            opts.I0             = (1:p)';            % or a small seed set
+            opts.propose_fun    = @(I,p) setdiff((1:p)', I);  % simple: everything not in I
+
+
+            %x0 = spm_vec(obj.DCM.M.pE);
+            M  = obj.DCM.M;
+            V  = full(diag(obj.opts.V));
+            y  = spm_vec(obj.DCM.xY.y);%[real(spm_vec(obj.DCM.xY.y)); imag(spm_vec(obj.DCM.xY.y))];
+
+            % [m, V, D, logL, iter, sigma2, allm] 
+            [obj.X, obj.VV, obj.D, obj.F,~,~,obj.trace] = fitVariationalLaplaceThermoStruct...
+                    (y, fun, x0, V, maxit, 1e-6,plots,[],opts);
+
+            %[obj.X, obj.CP, obj.F] = fitVariationalLaplaceThermo4thOrder(y, fun, x0, V, maxit, 1e-6);
+            %[obj.X, obj.CP, obj.F] = fitVariationalLaplaceNF(y, fun, x0, V, maxit, 1e-6);
+
+            [~, P] = fun(spm_vec(obj.X));
+            obj.Ep = spm_unvec(spm_vec(P),obj.DD.M.pE);
+            %obj.V = obj.CP;
+            %obj.CP = obj.CP * obj.CP' + obj.D;
+            
+            %V = obj.VV;
+
+            % V, D approximate PRECISION: H ≈ V*V' + diag(D)
+            %Dinv  = spdiags(1./diag(obj.D), 0, size(obj.D,1), size(obj.D,1));
+            %Mid   = eye(size(obj.VV,2)) + obj.VV'*(Dinv*obj.VV);        % k×k
+            obj.CP = V;% Dinv - Dinv*obj.VV*(Mid \ (obj.VV'*Dinv));     % ≈ posterior covariance
+            
+            %obj.CP = pinv( (obj.VV*obj.VV') + obj.D);
+
+            % Ainv = diag(1 ./ diag(obj.D));
+            % M = eye(size(V,2)) + V' * Ainv * V;
+            % invM = inv(M);  % small matrix
+            % obj.CP = Ainv - Ainv * V * invM * V' * Ainv;
+
+
+        end
+
         function aloglikVLtherm_active(obj,maxit,plots)
 
             if nargin < 2 || isempty(maxit)
@@ -464,11 +527,15 @@ classdef aFitDCM < handle
             % [m, V, D, logL, iter, sigma2, allm]
            % [obj.X, obj.VV, obj.D, obj.F,~,~,obj.allp,obj.dfdp] = fitVariationalLaplaceThermo(y, fun, x0, V, maxit, 1e-6,plots);
 
+           %sel = 'topk';
+           sel = 'threshold';
+           %n = 10;
+           n = .5;
 
            [obj.X, obj.VV, obj.D, obj.F,~,~,obj.allp,obj.dfdp, obj.active_log] = ...
                fitVariationalLaplaceThermo_active( ...
                y, fun, x0, V, maxit, 1e-6,plots, 0.01, ...
-               'grad', 'topk', 10, 1, 0);
+               'grad', sel, n, 1, 0);
 
            % y, f, m0, S0, 128, 1e-6, 1, 0.01, 'zpost', 'threshold', 1.5, 1, 0);
 

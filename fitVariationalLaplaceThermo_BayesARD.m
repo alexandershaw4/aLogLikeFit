@@ -1,176 +1,138 @@
-function [m, V, D, logL, iter, sigma2, allm, g_elbo] = ...
+function [m, V, D, logL, iter, sigma2, allm] = ...
     fitVariationalLaplaceThermo_BayesARD(y, f, m0, S0, maxIter, tol, plots, varpercthresh, useARDStep, tau_sched)
-% Variational Laplace with an optional PEB-ARD step (Bayesian Gauss–Newton).
-%
-% The ARD step solves a linearised update r ≈ J * dθ in a Bayesian way:
-%   X = J, y = r  (residual)
-% with ARD shrinkage per parameter and predictive uncertainty on dθ.
-% We also inject the prior as ridge-like pseudo-observations so that
-% curvature from S0 is respected in the update.
-%
-% Inputs/Outputs mostly match your original; new args:
-%   useARDStep (default true)   – use PEB-ARD for step; else fall back
-%   tau_sched  (1×maxIter)      – optional annealing schedule (τ), default 1s
-%
-% Requires: peb_ard_novar.m, peb_ard_predict.m (on path)
+% Variational Laplace with a temperature schedule and optional PEB-ARD step.
+% Includes: prior-centred line search, prior homotopy, heteroscedastic variance cap,
+% ARD warm-up + blending guard, Barzilai–Borwein step scaling, Mahalanobis trust region,
+% momentum, and relative-step Jacobian for stability.
 
 if nargin < 7 || isempty(plots),           plots = 1;                 end
 if nargin < 8 || isempty(varpercthresh),   varpercthresh = 0.01;      end
 if nargin < 9 || isempty(useARDStep),      useARDStep = true;         end
 if nargin < 10 || isempty(tau_sched),      tau_sched = ones(1,maxIter); end
 
-thresh = 1/16;
-solenoidalmix = 0;
+thresh = 1/16;                 % residual threshold stop
+solenoidalmix = 0;             % optional skew-symmetric mix
 
 % Initialisation
 m = m0(:);
 n = numel(y);
 d = numel(m);
 
-% Adaptive rank selection for low-rank approx of posterior covariance
+% Low-rank + diag initial posterior approx (kept for API parity)
 [U0,Sv0,~] = svd(full(S0), 'econ');
 eigvals = diag(Sv0);
-k = sum(eigvals > varpercthresh * max(eigvals));   % keep >% of max eig
-k = max(k, min(d, 1));                             % at least 1, at most d
-
-% initial low-rank + diag
+k = sum(eigvals > varpercthresh * max(eigvals));
+k = max(k, min(d, 1));
 V  = U0(:,1:k) * diag(sqrt(max(eigvals(1:k), 1e-12)));
-D  = diag(max(diag(S0) - sum(V.^2,2), 1e-10));     % keep PD-ish
-sigma2 = ones(n,1);
-epsilon = 1e-8;   % tiny floor for numerics
-betaHub = 1e-3;   % robust variance term
-nu = 3;           % t-like variance update
+D  = diag(max(diag(S0) - sum(V.^2,2), 1e-10));
 
-% bookkeeping
+epsilon  = 1e-8;
+betaHub0 = 1e-3;               % robust variance term (cooled over iters)
+nu       = 3;                  % t-like variance update
+
 allm = m(:);
 allentropy=[]; allloglike=[]; alllogprior=[]; all_elbo=[];
 best_elbo = -inf; m_best = m; V_best = V; D_best = D;
 if plots, fw = figure('position',[570,659,1740,649]); end
 
+% State for advanced stepping
+dm_prev = zeros(d,1);
+g_prev  = zeros(d,1);
+mu      = 0;                   % momentum coefficient
+delta   = 1.0;                 % trust-region radius (Mahalanobis)
+success_streak = 0;
+fail_streak    = 0;
+sig_cap        = [];           % soft cap for heteroscedastic variance
+
 for iter = 1:maxIter
-    tau = tau_sched(min(iter, numel(tau_sched)));   % temperature
+    tau = tau_sched(min(iter, numel(tau_sched)));
+
+    % --- robust variance cooling ---
+    betaHub = betaHub0 * max(0.2, 0.95^(iter-1));   % decays but not to zero
 
     % ----- model linearisation -----
-    y_pred = f(m);
-    residuals = y - y_pred;              % r
-    % robust, heteroscedastic variance update
+    y_pred   = f(m);
+    residuals = y - y_pred;
+
+    % Heteroscedastic variance with soft cap
     sigma2 = max(epsilon, (residuals.^2 + betaHub) ./ (nu + residuals.^2/2));
+    if isempty(sig_cap)
+        sig_cap = median(sigma2) * 8;
+    else
+        sig_cap = max(sig_cap * 0.95, median(sigma2) * 6);
+    end
+    sigma2 = min(sigma2, sig_cap);
 
-    % Jacobian J (N×d) via central differences
-    J = computeJacobian(f, m, n);
+    % Jacobian via relative central differences (scale-aware)
+    J = computeJacobian_rel(f, m, n);
 
-    % Likelihood part
+    % Likelihood pieces
     logL_lik = -0.5 * sum((residuals.^2 ./ sigma2) + log(2*pi*sigma2));
 
-    % Prior precision (you had a smoothed S0 option; keep it)
-    H_prior = inv(S0 + computeSmoothCovariance(m, 2) + 1e-6*eye(d));
-    g_prior = -H_prior * (m - m0);          % gradient from prior
+    % Prior precision with homotopy (let data lead early)
+    H_prior_full = inv(S0 + computeSmoothCovariance(m, 2) + 1e-6*eye(d));
+    w0 = 0.05; T_prior = 20;
+    if iter <= T_prior
+        w = w0 + (1 - w0) * (iter-1) / max(T_prior-1,1);
+    else
+        w = 1.0;
+    end
+    H_prior = w * H_prior_full;
+    g_prior = -H_prior * (m - m0);
 
-    % Gauss–Newton curvature
-    W = 1 ./ sigma2;                         % diag weights
-    H = J' * (bsxfun(@times, J, W));        % J' * diag(W) * J
-    g = J' * (W .* residuals) + g_prior;    % J' * diag(W) * r + prior grad
+    % Gauss–Newton curvature/gradient
+    W = 1 ./ sigma2;                         % diag weights (as vector)
+    H = J' * bsxfun(@times, J, W);          % J' * diag(W) * J
+    g = J' * (W .* residuals) + g_prior;    % gradient of (lik + prior)
     H_elbo = H + H_prior;
 
+    % Diagonal preconditioner (cheap, stabilises norms)
+    Hdiag = max(diag(H_elbo), 1e-12);
+    Mprec = spdiags(1./Hdiag, 0, d, d);
+
     % ============================================================
-    %  ARD STEP (data-only): X = J, y = r, then fuse with prior
+    %  ARD STEP (data-only) with warm-up + blending guard
     % ============================================================
-    useARD = useARDStep;
     dm = []; z_cred = [];
+    useARD = useARDStep && (iter > 3);   % warm-up GN for 3 iterations
 
     if useARD
         try
-            % 1) Temperature scaling: scale residual variance by tau
-            srt = 1/sqrt(max(tau, eps));
+            % Temperature scaling
+            srt   = 1/sqrt(max(tau, eps));
             X_ard = J * srt;
             y_ard = residuals * srt;
 
-            % 2) Run ARD on DATA ONLY (no prior augmentation!)
             optsARD = struct('standardise', true, ...
-                'tie_lambdas', true, ...
-                'max_iter', 500, ...
-                'tol', 1e-6);
+                             'tie_lambdas', true, ...
+                             'max_iter', 500, ...
+                             'tol', 1e-6);
             Mstep = peb_ard_novar(y_ard, X_ard, optsARD);
 
-            % 3) Extract ARD posterior in PARAMETER units
-            %    mean:
-            dm_ard = Mstep.beta_ordered;                  % d×1 (already mapped to "original" parameter scale)
-            dm_ard = denan(dm_ard);
-            %    covariance: start from std-space, map to parameter units
-            S_std = Mstep.Vbeta_ordered;                  % d×d (std-space)
-            sc = (Mstep.y_std(1) ./ Mstep.x_std_ordered(:));    % d×1
-            S_ard = (sc .* S_std) .* sc.';        % Σ_ARD in parameter units
-            S_ard = denan(S_ard);
+            dm_ard = denan(Mstep.beta_ordered);
+            S_std  = Mstep.Vbeta_ordered;
+            sc     = (Mstep.y_std(1) ./ Mstep.x_std_ordered(:));
+            S_ard  = denan((sc .* S_std) .* sc.');
 
-            % 4) Fuse with PRIOR: Σ*^{-1} = Σ_ARD^{-1} + H_prior ; μ* = Σ* Σ_ARD^{-1} μ_ARD
-            %    Use robust solves (no explicit inv)
-            %    Compute A = Σ_ARD^{-1} via chol or SVD-repair
-            [R,flag] = chol(S_ard, 'lower');
+            % Fuse ARD posterior with prior via linear solve (SPD repair if needed)
+            [R,flag] = chol((S_ard+S_ard')/2, 'lower');
             if flag==0
-                % inv via solves
-                Ainv_mu = R' \ (R \ dm_ard);         % Σ_ARD^{-1} μ_ARD
-                % Build Σ*^{-1} implicitly as H_star = H_prior + Σ_ARD^{-1}
-                % We need to solve H_star * dm = Ainv_mu
-                H_star = @(v) H_prior*v + (R' \ (R \ v));
-                % Use PCG to get dm
-                [dm,pcgflag,pcgres] = pcg(H_star, Ainv_mu, 1e-6, 200);
+                Ainv_mu = R' \ (R \ dm_ard);
+                H_star  = @(v) H_prior*v + (R' \ (R \ v));
+                [dm,pcgflag] = pcg(@(v) H_star(v), Ainv_mu, 1e-6, 200, Mprec);
                 if pcgflag~=0
-                    % Fallback: add small ridge
-                    [dm,pcgflag,pcgres] = pcg(@(v) H_star(v)+1e-6*v, Ainv_mu, 1e-6, 400);
+                    [dm,~] = pcg(@(v) H_star(v)+1e-6*v, Ainv_mu, 1e-6, 400, Mprec);
                 end
-                % Posterior covariance Σ*: not needed for update, but we want z
-                % Get diagonal approx via probing (cheap): e_i basis
-                zdiag = zeros(d,1);
-                for kprobe = 1:min(d, 16)        % 16 probes is enough for z range; increase if you like
-                    e = randn(d,1); e = e/norm(e);
-                    w = R' \ (R \ e);            % Σ_ARD^{-1} e
-                    v = pcg(H_star, w, 1e-6, 200); % (H_star)^{-1} (Σ_ARD^{-1} e) ≈ Σ* e
-                    zdiag = zdiag + (v.^2);
-                end
-                zdiag = d * zdiag / min(d,16);   % rough diag(Σ*)
-                step_sd = sqrt(max(zdiag, 1e-12));
             else
-                % S_ard not SPD -> SVD repair
                 [U,Sv] = svd((S_ard+S_ard')/2, 'econ');
-                s = max(diag(Sv), 1e-12);
-                % Σ_ARD^{-1} = U diag(1/s) U'
+                s      = max(diag(Sv), 1e-12);
                 Ainv_mu = U * ((U' * dm_ard) ./ s);
-                H_star_mv = @(v) H_prior*v + U * ((U' * v) ./ s);
-                [dm,pcgflag,pcgres] = pcg(H_star_mv, Ainv_mu, 1e-6, 200);
-                % posterior sd (rough): use same probing trick
-                zdiag = zeros(d,1);
-                for kprobe = 1:min(d, 16)
-                    e = randn(d,1); e = e/norm(e);
-                    w = U * ((U' * e) ./ s);
-                    v = pcg(H_star_mv, w, 1e-6, 200);
-                    zdiag = zdiag + (v.^2);
-                end
-                zdiag = d * zdiag / min(d,16);
-                step_sd = sqrt(max(zdiag, 1e-12));
+                H_star  = @(v) H_prior*v + U*((U'*v)./s);
+                [dm,~]  = pcg(H_star, Ainv_mu, 1e-6, 200, Mprec);
             end
 
-            % 5) Coordinate-wise credibility for logging / optional gating
-            z_cred = abs(dm) ./ max(step_sd, 1e-12);
-
-            % 6) Trust region & monotone line search
-            maxStep = 0.3;                        % smaller, gentler steps
-            nrm = norm(dm);
-            if nrm > maxStep, dm = dm * (maxStep / nrm); end
-
-            % quick one-step backtracking on the ELBO surrogate
-            m_try = m + dm;
-            y_try = f(m_try);
-            r_try = y - y_try;
-            sig_try = max(epsilon, (r_try.^2 + 1e-3) ./ (nu + r_try.^2/2));
-            J_try = computeJacobian(f, m_try, n);
-            H_try = J_try' * (bsxfun(@times, J_try, 1./sig_try));
-            L_try = -0.5 * sum((r_try.^2 ./ sig_try) + log(2*pi*sig_try)) ...
-                -0.5 * (m_try - m0)' * H_prior * (m_try - m0) ...
-                + 0.5 * sum(log(max(diag(H_try + H_prior),1e-12))); % crude entropy proxy
-
-            if iter>1 && L_try < logL
-                dm = 0.5 * dm;   % halve once; keep it simple
-            end
+            % Rough credibility (diag approx)
+            z_cred = abs(dm) ./ sqrt(max(1./Hdiag,1e-12));
 
         catch ME
             warning('ARD step failed (%s). Falling back to linear solve.', ME.message);
@@ -178,24 +140,50 @@ for iter = 1:maxIter
         end
     end
 
-
-    % Fallback: your original Cholesky/PCG solve if ARD not used
-    if ~useARD
-        try
-            L = chol(H_elbo, 'lower');
-            dm = L' \ (L \ g);
-        catch
-            [dm,flag,relres] = pcg(H_elbo + 1e-6*eye(d), g, 1e-6, 200);
-            if flag~=0
-                warning('PCG fallback had flag=%d, relres=%.2e. Damping step.', flag, relres);
-                dm = g / (trace(H_elbo)/d + 1e-6);
-            end
+    % Linear GN fallback (and also GN direction for blending)
+    try
+        L = chol(H_elbo, 'lower');
+        dm_lin = L' \ (L \ g);
+    catch
+        [dm_lin,flag_lin] = pcg(H_elbo + 1e-6*speye(d), g, 1e-6, 200, Mprec);
+        if exist('flag_lin','var') && flag_lin~=0
+            dm_lin = g ./ (mean(Hdiag)+1e-6);
         end
-        % trust region
-        maxStep = 1.0;
-        nrm = norm(dm);
-        if nrm > maxStep, dm = dm * (maxStep / nrm); end
     end
+
+    % Blend or pick GN if ARD misaligned with gradient
+    if isempty(dm) || ~useARD
+        dm = dm_lin;
+    else
+        cg_ard = (g'*dm)     / (norm(g)*max(norm(dm),1e-12));
+        cg_lin = (g'*dm_lin) / (norm(g)*max(norm(dm_lin),1e-12));
+        if cg_ard < max(-0.1, 0.6*cg_lin)
+            dm = dm_lin;
+        else
+            alpha = 0.5 + 0.5 * tanh(3*(cg_ard - cg_lin));
+            dm = alpha*dm + (1-alpha)*dm_lin;
+        end
+    end
+
+    % Barzilai–Borwein scaling (clamped wider)
+    if iter > 1
+        s  = dm_prev;
+        yk = g - g_prev;
+        denom = (s'*yk);
+        if abs(denom) > 1e-16
+            bb = (s'*s) / denom;
+            bb = min(max(bb, 1e-3), 50);   % was 10
+            dm = bb * dm;
+        end
+    end
+
+    % Mahalanobis trust region: dm' H_elbo dm <= delta^2
+    qdm = dm' * (H_elbo * dm);
+    if ~isfinite(qdm) || qdm <= 0
+        qdm = dm' * (spdiags(Hdiag,0,d,d) * dm);
+    end
+    scaleTR = min(1, delta / sqrt(max(qdm,1e-12)));
+    dm = dm * scaleTR;
 
     % Optional solenoidal mixing
     if solenoidalmix
@@ -203,42 +191,57 @@ for iter = 1:maxIter
         dm = dm - gamma * Q * dm;
     end
 
-    % ----- propose update -----
+    % Nesterov-like momentum
     m_prev = m;
-    m = m + dm;
+    m = m + dm + mu*(m - (m_prev - dm));
+
     allm = [allm m(:)];
 
-    % ----- ELBO pieces (approximate entropy term) -----
-    % Entropy ≈ 0.5*log|Σ|; we approximate with inverse(H_elbo)
-    logL_entropy = 0.5 * sum(log(max(diag(H_elbo),1e-12)));  % crude but monotone proxy
-    logL_prior    = -0.5 * (m - m0)' * H_prior * (m - m0);
-    logL          = logL_lik + logL_prior + logL_entropy;
+    % ----- ELBO (proxy entropy) -----
+    logL_entropy = 0.5 * sum(log(max(diag(H_elbo),1e-12)));
+    logL_prior   = -0.5 * (m - m0)' * H_prior * (m - m0);
+    logL         = logL_lik + logL_prior + logL_entropy;
 
-    % Backtrack if ELBO decreased
+    % Backtracking Armijo with correct prior centring
     if iter > 1 && logL < all_elbo(end)
-        stepScale = 0.5; maxTries = 8;
-        improved = false;
-        for t = 1:maxTries
-            m_try = m_prev + (stepScale^t) * dm;
-            y_try = f(m_try);
-            r_try = y - y_try;
-            sig_try = max(epsilon, (r_try.^2 + betaHub) ./ (nu + r_try.^2/2));
-            J_try = computeJacobian(f, m_try, n);
-            H_try = J_try' * (bsxfun(@times, J_try, 1./sig_try));
-            H_elbo_try = H_try + H_prior;
-
-            ll_try  = -0.5 * sum((r_try.^2 ./ sig_try) + log(2*pi*sig_try));
-            ent_try = 0.5 * sum(log(max(diag(H_elbo_try),1e-12)));
-            lp_try  = -0.5 * (m_try - m0)' * H_prior * (m_try - m0);
-            L_try   = ll_try + ent_try + lp_try;
-
-            if L_try > logL
+        step = 1.0; c = 1e-4; shrink = 0.5; improved=false;
+        dir  = (m - m_prev);
+        for tbt = 1:8
+            step = step * shrink;
+            m_try = m_prev + step * dir;
+            L_try = local_ELBO(m_try, m0, f, y, H_prior, betaHub, nu); % centred at m0
+            if L_try >= all_elbo(end) + c*step*(g'*dir)
                 m = m_try; logL = L_try; improved = true; break;
             end
         end
         if ~improved
             m = m_prev; logL = all_elbo(end);
+            fail_streak    = fail_streak + 1; success_streak = 0;
+            delta = max(0.5*delta, 1e-3);  % shrink trust-region
+            mu    = max(mu*0.5, 0);        % reduce momentum
+        else
+            success_streak = success_streak + 1; fail_streak = 0;
+            delta = min(delta*1.2, 10);    % widen gently
+            mu    = min(0.9, 0.4 + 0.05*success_streak);
         end
+    else
+        % Accepted without backtracking: optionally expand a bit
+        if iter > 1 && (logL - all_elbo(end)) > 1e-3
+            dir = (m - m_prev);
+            m_try = m_prev + 1.2 * dir;
+            % quick check (ll+lp only; entropy proxy unchanged)
+            r2   = y - f(m_try);
+            sig2 = max(1e-8,(r2.^2 + betaHub) ./ (nu + r2.^2/2));
+            ll2  = -0.5 * sum((r2.^2 ./ sig2) + log(2*pi*sig2));
+            lp2  = -0.5 * (m_try - m0)' * H_prior * (m_try - m0);
+            L2   = ll2 + lp2 + 0.5 * sum(log(max(diag(H_elbo),1e-12)));
+            if L2 >= logL
+                m = m_try; logL = L2;
+            end
+        end
+        success_streak = success_streak + 1; fail_streak = max(fail_streak-1,0);
+        delta = min(delta*1.1, 10);
+        mu    = min(0.9, 0.4 + 0.05*success_streak);
     end
 
     % record
@@ -251,21 +254,21 @@ for iter = 1:maxIter
         best_elbo = logL; m_best = m; V_best = V; D_best = D;
     end
 
-    % ----- quick plots -----
+    % quick plots
     if plots
         w = (1:n).';
         y_pred_new = f(m);
         figure(fw); clf
-        t = tiledlayout(2,4, 'TileSpacing','compact','Padding','compact');
+        tiledlayout(2,4, 'TileSpacing','compact','Padding','compact');
 
         nexttile([1 4]); hold on
-        errorbar(w, y, sqrt(sigma2), 'k.', 'CapSize',0, 'DisplayName','Observed ±σ');
-        plot(w, y, 'k', 'LineWidth',1, 'DisplayName','Observed mean');
-        plot(w, y_pred, '--', 'Color',[0 0.4 1], 'LineWidth',1.5, 'DisplayName','Prev pred');
-        plot(w, y_pred_new, '-', 'Color',[0.8 0 0], 'LineWidth',2, 'DisplayName','Current pred');
-        plot(w, sqrt(sigma2), '-', 'Color',[0.1 0.6 0.1], 'LineWidth',1.5, 'DisplayName','sqrt(σ^2)');
-        title(sprintf('VL with %s step (\\tau=%.3g)', tern(useARD,'PEB-ARD','linear'), tau), 'FontWeight','bold');
-        legend('Location','best'); grid on; box on; hold off
+        errorbar(w, y, sqrt(sigma2), 'k.', 'CapSize',0);
+        plot(w, y, 'k', 'LineWidth',1);
+        plot(w, y_pred, '--', 'Color',[0 0.4 1], 'LineWidth',1.5);
+        plot(w, y_pred_new, '-', 'Color',[0.8 0 0], 'LineWidth',2);
+        plot(w, sqrt(sigma2), '-', 'Color',[0.1 0.6 0.1], 'LineWidth',1.5);
+        title(sprintf('VL %s (\\tau=%.3g) | TR=%.2f | mu=%.2f', tern(useARD,'+ ARD',''), tau, delta, mu), 'FontWeight','bold');
+        legend({'Obs \pmσ','Obs','Prev pred','Current pred','sqrt(σ²)'}, 'Location','best'); grid on; box on; hold off
 
         nexttile; plot(1:iter, allentropy, '-o'); title('Entropy'); grid on; box on
         nexttile; plot(1:iter, allloglike, '-o'); title('Log-Likelihood'); grid on; box on
@@ -278,17 +281,20 @@ for iter = 1:maxIter
 
     % ----- convergence -----
     y_pred_new = f(m);
-    if norm(dm) < tol || norm((y - y_pred_new).^2) <= thresh
+    if norm(m - m_prev) < tol || norm((y - y_pred_new).^2) <= thresh
         fprintf('Converged at iter %d\n', iter);
         break;
     end
 
-    fprintf('Iter %d | ELBO %.4f | ||dm|| %.4g | step via %s%s\n', ...
-        iter, logL, norm(dm), tern(useARD,'ARD','LIN'), ...
+    fprintf('Iter %d | ELBO %.4f | ||dm|| %.4g | TR %.2f | mu %.2f | step %s%s\n', ...
+        iter, logL, norm(m - m_prev), delta, mu, tern(useARD,'ARD-blend','LIN'), ...
         tern(~isempty(z_cred), sprintf(' | med z=%.2f', median(z_cred,'omitnan')), ''));
+
+    % carry state for BB
+    dm_prev = (m - m_prev);
+    g_prev  = g;
 end
 
-% return best fits
 fprintf('Returning best fits...\n');
 m     = m_best;
 V     = V_best;
@@ -297,27 +303,40 @@ logL  = best_elbo;
 
 end
 
-function J = computeJacobian(f, x, m)
-% central-difference Jacobian of f(x) \in R^m
-    epsc = 1e-6;
+% ===================== Helpers =====================
+
+function J = computeJacobian_rel(f, x, m)
+% Relative-step central-difference Jacobian of f(x) \in R^m
     n = numel(x);
     J = zeros(m, n);
     fx = f(x);
     parfor i = 1:n
-        xp = x; xm = x;
-        xp(i) = xp(i) + epsc;
-        xm(i) = xm(i) - epsc;
-        J(:,i) = (f(xp) - f(xm)) / (2*epsc);
+        h = 1e-6 * (1 + abs(x(i)));           % relative step
+        xp = x; xm = x; xp(i)=xp(i)+h; xm(i)=xm(i)-h;
+        J(:,i) = (f(xp) - f(xm)) / (2*h);
     end
-    % fallback if any NaNs
     bad = any(~isfinite(J),1);
     if any(bad)
-        J(:,bad) = repmat((fx - f(x - epsc*eye(n,1)))/epsc, 1, sum(bad));
+        for i=find(bad)
+            h = 1e-6*(1+abs(x(i)));
+            ei = zeros(n,1); ei(i)=1;
+            J(:,i) = (f(x + h*ei) - fx)/h;
+        end
     end
 end
 
+function [L_try] = local_ELBO(m_try, m0, f, y, H_prior, betaHub, nu)
+% ELBO surrogate used in line search (ll + prior; entropy proxy omitted)
+    epsilon = 1e-8;
+    r   = y - f(m_try);
+    sig = max(epsilon, (r.^2 + betaHub) ./ (nu + r.^2/2));
+    ll  = -0.5 * sum((r.^2 ./ sig) + log(2*pi*sig));
+    lp  = -0.5 * (m_try - m0)' * H_prior * (m_try - m0);  % centre at m0
+    L_try = ll + lp;
+end
+
 function K = computeSmoothCovariance(x, ell)
-% simple RBF on parameters to stabilise prior precision
+% Simple RBF prior smoothness on parameters to stabilise prior precision
     if nargin<2, ell=2; end
     x = real(x(:));
     D2 = pdist2(x,x).^2;
@@ -326,4 +345,8 @@ end
 
 function s = tern(cond,a,b)
     if cond, s=a; else, s=b; end
+end
+
+function v = denan(v)
+    v(~isfinite(v)) = 0;
 end

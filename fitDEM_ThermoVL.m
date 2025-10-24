@@ -122,34 +122,34 @@ for it = 1:outerIt
         if t > 1, xgc = xgc_path(t-1,:).'; end
 
         % ---- observation seeding: reduce y-residual at 0th order (cheap LS) ----
-Xtmp = reshape(xgc, nx, p+1);
-x0t  = Xtmp(:,1);
+        Xtmp = reshape(xgc, nx, p+1);
+        x0t  = Xtmp(:,1);
 
-% ensure column shapes
-y0 = ygc_t(1:ny);      y0 = y0(:);
-g0 = g(x0t, theta);    g0 = g0(:);
+        % ensure column shapes
+        y0 = ygc_t(1:ny);      y0 = y0(:);
+        g0 = g(x0t, theta);    g0 = g0(:);
 
-% Jacobian (ny x nx)
-Gy = jacobian_fd(@(x) g(x,theta), x0t);
+        % Jacobian (ny x nx)
+        Gy = jacobian_fd(@(x) g(x,theta), x0t);
 
-% guard against any row/shape quirks
-m = size(Gy,1);              % rows of Gy == output dim of g
-y0 = y0(1:m);
-g0 = g0(1:m);
+        % guard against any row/shape quirks
+        m = size(Gy,1);              % rows of Gy == output dim of g
+        y0 = y0(1:m);
+        g0 = g0(1:m);
 
-% damped dual normal equations (works for any ny,nx)
-reg = 1e-3;
-A   = Gy;           % m x nx
-b   = y0 - g0;      % m x 1
-dx0 = A.' * ((A*A.' + reg*eye(m)) \ b);   % nx x 1
+        % damped dual normal equations (works for any ny,nx)
+        reg = 1e-3;
+        A   = Gy;           % m x nx
+        b   = y0 - g0;      % m x 1
+        dx0 = A.' * ((A*A.' + reg*eye(m)) \ b);   % nx x 1
 
-% clip step
-mx = 2.0; 
-if norm(dx0) > mx, dx0 = dx0*(mx/norm(dx0)); end
+        % clip step
+        mx = 2.0;
+        if norm(dx0) > mx, dx0 = dx0*(mx/norm(dx0)); end
 
-Xtmp(:,1) = x0t + dx0;
-xgc = Xtmp(:);
-% ------------------------------------------------------------------------
+        Xtmp(:,1) = x0t + dx0;
+        xgc = Xtmp(:);
+        % ------------------------------------------------------------------------
 
 
         % inner recognition updates for this time point
@@ -273,8 +273,8 @@ xgc = Xtmp(:);
 
     % --- bookkeeping & free-action (approximate) ---
     Fa = -0.5*( ly*ss_y + lx*ss_x ) ...
-         -0.5*((theta - pE_theta).'*Hth_prior*(theta - pE_theta)) ...
-         -0.5*((xgc_path(1,:).' - xgc0_mu).'*((xgc0_C \ eye(size(xgc0_C)))*(xgc_path(1,:).' - xgc0_mu)));
+        -0.5*((theta - pE_theta).'*Hth_prior*(theta - pE_theta)) ...
+        -0.5*((xgc_path(1,:).' - xgc0_mu).'*((xgc0_C \ eye(size(xgc0_C)))*(xgc_path(1,:).' - xgc0_mu)));
 
     theta_hist(:,it)  = theta;
     lambda_hist(:,it) = [ly; lx];
@@ -358,134 +358,134 @@ end % main
 % ==================== helpers ====================
 
 function [r, epsy, epsx] = residual_gc(xgc, ygc, theta, f, g, DopX, wy, wx, nx, ny, p, py, ly, lx)
-    [~,  epsx] = eps_x_gc(xgc, theta, f, DopX, wx, nx, p);
-    [~,  epsy] = eps_y_gc(xgc, ygc, theta, g, wy, nx, ny, p, py);
-    r = [sqrt(ly)*epsy; sqrt(lx)*epsx];
+[~,  epsx] = eps_x_gc(xgc, theta, f, DopX, wx, nx, p);
+[~,  epsy] = eps_y_gc(xgc, ygc, theta, g, wy, nx, ny, p, py);
+r = [sqrt(ly)*epsy; sqrt(lx)*epsx];
 end
 
 function [ygc_hat, epsy] = eps_y_gc(xgc, ygc, theta, g, wy, nx, ny, p, py)
-    % Build ĝ̃ up to order py and form eps_y = W * ( ỹ - ĝ̃ )
-    X   = reshape(xgc, nx, p+1);
-    x0  = X(:,1);
-    Yhat = zeros(ny, py+1);
+% Build ĝ̃ up to order py and form eps_y = W * ( ỹ - ĝ̃ )
+X   = reshape(xgc, nx, p+1);
+x0  = X(:,1);
+Yhat = zeros(ny, py+1);
 
-    % 0th order
-    Yhat(:,1) = g(x0,theta);
+% 0th order
+Yhat(:,1) = g(x0,theta);
 
-    if py >= 1
-        gx0 = jacobian_fd(@(x) g(x,theta), x0);
-        Yhat(:,2) = gx0 * X(:,2);
-    end
-    if py >= 2
-        gx0 = jacobian_fd(@(x) g(x,theta), x0);
-        dir   = X(:,2); nd = max(1e-6, 1e-6*norm(dir));
-        gx_f  = jacobian_fd(@(x) g(x,theta), x0 + nd*dir);
-        dgx_d = (gx_f - gx0)/nd;
-        Yhat(:,3) = dgx_d*X(:,2) + gx0*X(:,3);
-    end
+if py >= 1
+    gx0 = jacobian_fd(@(x) g(x,theta), x0);
+    Yhat(:,2) = gx0 * X(:,2);
+end
+if py >= 2
+    gx0 = jacobian_fd(@(x) g(x,theta), x0);
+    dir   = X(:,2); nd = max(1e-6, 1e-6*norm(dir));
+    gx_f  = jacobian_fd(@(x) g(x,theta), x0 + nd*dir);
+    dgx_d = (gx_f - gx0)/nd;
+    Yhat(:,3) = dgx_d*X(:,2) + gx0*X(:,3);
+end
 
-    ygc_hat = reshape(Yhat, (py+1)*ny, 1);
-    W  = kron(diag(wy), eye(ny));
-    epsy = W * (ygc - ygc_hat);
+ygc_hat = reshape(Yhat, (py+1)*ny, 1);
+W  = kron(diag(wy), eye(ny));
+epsy = W * (ygc - ygc_hat);
 end
 
 function [xflow_hat, epsx] = eps_x_gc(xgc, theta, f, DopX, wx, nx, p)
-    % eps_x = W * ( D*x̃ – f̃ )
-    X   = reshape(xgc, nx, p+1);
-    x0  = X(:,1);
-    fx0 = jacobian_fd(@(x) f(x,theta), x0);
-    f0  = f(x0,theta);
+% eps_x = W * ( D*x̃ – f̃ )
+X   = reshape(xgc, nx, p+1);
+x0  = X(:,1);
+fx0 = jacobian_fd(@(x) f(x,theta), x0);
+f0  = f(x0,theta);
 
-    Fgc = zeros(nx, p+1);
-    Fgc(:,1) = f0;
-    if p >= 1
-        Fgc(:,2) = fx0 * X(:,2);
-    end
-    if p >= 2
-        dir   = X(:,2); nd = max(1e-6, 1e-6*norm(dir));
-        fx_f  = jacobian_fd(@(x) f(x,theta), x0 + nd*dir);
-        dfx_d = (fx_f - fx0)/nd;
-        Fgc(:,3) = dfx_d*X(:,2) + fx0*X(:,3);
-    end
+Fgc = zeros(nx, p+1);
+Fgc(:,1) = f0;
+if p >= 1
+    Fgc(:,2) = fx0 * X(:,2);
+end
+if p >= 2
+    dir   = X(:,2); nd = max(1e-6, 1e-6*norm(dir));
+    fx_f  = jacobian_fd(@(x) f(x,theta), x0 + nd*dir);
+    dfx_d = (fx_f - fx0)/nd;
+    Fgc(:,3) = dfx_d*X(:,2) + fx0*X(:,3);
+end
 
-    Dxgc    = DopX * xgc;
-    fgc_vec = Fgc(:);
+Dxgc    = DopX * xgc;
+fgc_vec = Fgc(:);
 
-    W = kron(diag(wx), eye(nx));
-    epsx = W * (Dxgc - fgc_vec);
-    xflow_hat = fgc_vec;
+W = kron(diag(wx), eye(nx));
+epsx = W * (Dxgc - fgc_vec);
+xflow_hat = fgc_vec;
 end
 
 function J = jacobian_fd(fun, x)
-    % central finite-difference Jacobian
-    y0 = fun(x);
-    m  = numel(y0);
-    n  = numel(x);
-    J  = zeros(m,n);
-    eps0 = 1e-6;
-    for i = 1:n
-        dx = zeros(n,1);  dx(i) = eps0*max(1,abs(x(i)));
-        fp = fun(x + dx);
-        fm = fun(x - dx);
-        J(:,i) = (fp - fm) / (2*dx(i));
-    end
+% central finite-difference Jacobian
+y0 = fun(x);
+m  = numel(y0);
+n  = numel(x);
+J  = zeros(m,n);
+eps0 = 1e-6;
+for i = 1:n
+    dx = zeros(n,1);  dx(i) = eps0*max(1,abs(x(i)));
+    fp = fun(x + dx);
+    fm = fun(x - dx);
+    J(:,i) = (fp - fm) / (2*dx(i));
+end
 end
 
 function [sol, info] = solve_posdef(H, g)
 % Levenberg–Marquardt + diag-jitter + SVD fallback
-    info = struct('lam',[],'method','chol');
-    lam = 1e-3 * max(1, norm(H, 'fro')/max(1,numel(H)));  % scale-aware
-    D   = diag(max(1e-12, diag(H)));                     % keep structure
+info = struct('lam',[],'method','chol');
+lam = 1e-3 * max(1, norm(H, 'fro')/max(1,numel(H)));  % scale-aware
+D   = diag(max(1e-12, diag(H)));                     % keep structure
 
-    for k = 1:8
-        try
-            L = chol(H + lam*D + 1e-10*eye(size(H)), 'lower');
-            sol = L'\(L\g);
-            info.lam = lam;
-            return
-        catch
-            lam = lam * 10;         % increase damping
-        end
+for k = 1:8
+    try
+        L = chol(H + lam*D + 1e-10*eye(size(H)), 'lower');
+        sol = L'\(L\g);
+        info.lam = lam;
+        return
+    catch
+        lam = lam * 10;         % increase damping
     end
-    % Fallback: truncated SVD (floor small singular values)
-    [U,S,V] = svd(H, 'econ');
-    s = diag(S);
-    s_floor = 1e-8 * max(s);
-    s(s < s_floor) = s_floor;
-    sol = V * ((U' * g) ./ s);
-    info.method = 'svd';
-    info.lam = lam;
+end
+% Fallback: truncated SVD (floor small singular values)
+[U,S,V] = svd(H, 'econ');
+s = diag(S);
+s_floor = 1e-8 * max(s);
+s(s < s_floor) = s_floor;
+sol = V * ((U' * g) ./ s);
+info.method = 'svd';
+info.lam = lam;
 end
 
 function Xgc = generalise_observation(y, p, dt)
-    % Stack y, Dy, D2y via simple finite differences (optionally smoothed)
-    [T,ny] = size(y);
-    Ygc = zeros(T,(p+1)*ny);
-    Ygc(:,1:ny) = y;           % 0th order
-    if p >= 1
-        Dy = [diff(y)/dt; zeros(1,ny)];
-        Ygc(:,ny+(1:ny)) = Dy;
-    end
-    if p >= 2
-        D2y = [diff(Dy)/dt; zeros(1,ny)];
-        Ygc(:,2*ny+(1:ny)) = D2y;
-    end
-    Xgc = Ygc;
+% Stack y, Dy, D2y via simple finite differences (optionally smoothed)
+[T,ny] = size(y);
+Ygc = zeros(T,(p+1)*ny);
+Ygc(:,1:ny) = y;           % 0th order
+if p >= 1
+    Dy = [diff(y)/dt; zeros(1,ny)];
+    Ygc(:,ny+(1:ny)) = Dy;
+end
+if p >= 2
+    D2y = [diff(Dy)/dt; zeros(1,ny)];
+    Ygc(:,2*ny+(1:ny)) = D2y;
+end
+Xgc = Ygc;
 end
 
 function xgc = seed_generalised_state(xgc, theta, f, p, nx)
-    X = reshape(xgc, nx, p+1);
-    x0 = X(:,1);
-    if p >= 1
-        X(:,2) = f(x0,theta);
-    end
-    if p >= 2
-        fx0 = jacobian_fd(@(x) f(x,theta), x0);
-        X(:,3) = fx0*X(:,2);
-    end
-    xgc = X(:);
+X = reshape(xgc, nx, p+1);
+x0 = X(:,1);
+if p >= 1
+    X(:,2) = f(x0,theta);
+end
+if p >= 2
+    fx0 = jacobian_fd(@(x) f(x,theta), x0);
+    X(:,3) = fx0*X(:,2);
+end
+xgc = X(:);
 end
 
 function val = getd(s,field,default)
-    if isfield(s,field) && ~isempty(s.(field)), val = s.(field); else, val = default; end
+if isfield(s,field) && ~isempty(s.(field)), val = s.(field); else, val = default; end
 end
