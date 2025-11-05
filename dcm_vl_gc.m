@@ -83,6 +83,10 @@ Jfun = @(th) fd_J_parfor(@(t) pack_gc_mod( predict(embed(Evec,active,t)) , Phi, 
 % --- initial θ (active)
 theta  = mu;
 alpha  = opts.step;                 % simple trust-region scalar
+
+lambda = 1e-1; lambda_up = 5; lambda_down = 0.3;
+max_step_norm = 3.0;   % cap in prior metric units
+
 Ftrace = [];
 theta_hist = [];
 
@@ -103,33 +107,53 @@ for beta = opts.beta_sched(:)'
         yhat_gc = pack_gc_mod(Smask, Phi, Wf, use_log);
         e       = y_gc - yhat_gc;
 
-        % GN metric and gradient
-        J = Jfun(theta);                   % [m x na]
-        G = beta*(J.'*J) + Pi_theta;       % Hessian approx
-        g = -beta*(J.'*e) + Pi_theta*(theta - mu);
+        % --- GN pieces at current theta
+        J = Jfun(theta);
+        G = beta*(J.'*J) + Pi_theta;                % GN metric for F (H_F ≈ -G)
+        g = -beta*(J.'*e) + Pi_theta*(theta - mu);  % grad F
 
-        dtheta     = -(G \ g);
-        theta_new  = theta + alpha * dtheta;
+        % Levenberg–Marquardt damping
+        Gd = G + lambda * eye(size(G));
+        dtheta = -(Gd \ g);                         % proposed step (maximising F)
 
-        % --- recompute model & residual at θ_new ---
-        Smask_new  = predict(embed(Evec,active,theta_new));
-        yhat_gc_new= pack_gc_mod(Smask_new, Phi, Wf, use_log);
-        e_new      = y_gc - yhat_gc_new;
+        % Optional: cap step in prior metric
+        sn = sqrt(dtheta.' * (Pi_theta * dtheta));
+        if sn > max_step_norm
+            dtheta = dtheta * (max_step_norm / max(sn, eps));
+        end
 
-        % free-energy surrogate (up to const)
+        % --- Evaluate at proposed theta_new
+        theta_new   = theta + dtheta;
+        Smask_new   = predict(embed(Evec,active,theta_new));
+        yhat_gc_new = pack_gc_mod(Smask_new, Phi, Wf, use_log);
+        e_new       = y_gc - yhat_gc_new;
+
+        % Free energy (up to consts)
         Fold = free_energy_quad(e,     beta) - 0.5*(theta     -mu).'*(Pi_theta*(theta     -mu));
         Fnew = free_energy_quad(e_new, beta) - 0.5*(theta_new -mu).'*(Pi_theta*(theta_new -mu));
 
-        if Fnew >= Fold
-            theta = theta_new;
-            Smask = Smask_new;                % keep forward result we already computed
-            e     = e_new;
-            alpha = min(alpha*1.25, 1.0);
+        % --- Trust-region ratio ρ = actual / predicted increase
+        % For F, Hessian ≈ -G  => quadratic model: ΔF_pred = g'Δ - 0.5 Δ' G Δ
+        dF_pred = (g.'*dtheta) - 0.5*(dtheta.' * (G * dtheta));
+        dF_act  = (Fnew - Fold);
+        rho     = dF_act / max(dF_pred, eps);
+
+        % --- Accept / reject & update lambda
+        if rho > 0      % some actual increase
+            theta  = theta_new;
+            Smask  = Smask_new;
+            e      = e_new;
             Ftrace(end+1,1) = Fnew;
             theta_hist(:,end+1) = theta;
-        else
-            alpha = max(alpha*0.5, 1e-6);
         end
+
+        if     rho > 0.75, lambda = max(lambda * lambda_down, 1e-9);
+        elseif rho < 0.25, lambda = min(lambda * lambda_up,   1e9);
+        end
+
+        % (optional) early stopping
+        if norm(g) < 1e-4 || norm(dtheta) < 1e-6, break; end
+
 
 
         if opts.verbose && mod(it,16)==0
