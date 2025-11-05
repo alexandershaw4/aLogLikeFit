@@ -99,18 +99,26 @@ for beta = opts.beta_sched(:)'
         dtheta     = -(G \ g);
         theta_new  = theta + alpha * dtheta;
 
+        % --- recompute model & residual at θ_new ---
+        Smask_new  = predict(embed(Evec,active,theta_new));
+        yhat_gc_new= pack_gc_mod(Smask_new, Phi, Wf, use_log);
+        e_new      = y_gc - yhat_gc_new;
+
         % free-energy surrogate (up to const)
-        Fnew = free_energy_quad(e, beta) - 0.5*(theta_new-mu).'*(Pi_theta*(theta_new-mu));
-        Fold = free_energy_quad(e, beta) - 0.5*(theta     -mu).'*(Pi_theta*(theta     -mu));
+        Fold = free_energy_quad(e,     beta) - 0.5*(theta     -mu).'*(Pi_theta*(theta     -mu));
+        Fnew = free_energy_quad(e_new, beta) - 0.5*(theta_new -mu).'*(Pi_theta*(theta_new -mu));
 
         if Fnew >= Fold
             theta = theta_new;
+            Smask = Smask_new;                % keep forward result we already computed
+            e     = e_new;
             alpha = min(alpha*1.25, 1.0);
-            Ftrace(end+1,1) = Fnew; %#ok<AGROW>
-            theta_hist(:,end+1) = theta; %#ok<AGROW>
+            Ftrace(end+1,1) = Fnew;
+            theta_hist(:,end+1) = theta;
         else
             alpha = max(alpha*0.5, 1e-6);
         end
+
 
         if opts.verbose && mod(it,16)==0
             fprintf('  it %3d | ||g||=%.3e | ||dθ||=%.3e | α=%.2g | F≈%.3f\n', ...
