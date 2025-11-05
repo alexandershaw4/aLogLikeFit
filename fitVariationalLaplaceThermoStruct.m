@@ -83,7 +83,7 @@ best = struct('F',-inf,'m',m,'V',V,'I',I,'lambda',lambda);
 for iter = 1:maxIter
     tau = tau_sched(min(iter, numel(tau_sched)));
     % 1) inference on active set (others clamped to prior)
-    [m,V,Fe,sigma2] = vl_inner_step(y, f, m, V, m0, S0i, I, tau, sigma2, model_args);
+    [m,V,Fe,sigma2,J,r] = vl_inner_step(y, f, m, V, m0, S0i, I, tau, sigma2, model_args);
     logF(iter) = Fe;
     trace(iter).tau = tau;
 
@@ -102,7 +102,17 @@ for iter = 1:maxIter
     I = I(keepMask);
 
     % 5) PROPOSE/GROW pass (limited number per iter)
+    %pack = struct();
+    %pack.J        = J;
+    %pack.r        = r;
+    %pack.S0       = S0;
+    %if exist('Lambda','var'),  pack.Lambda  = Lambda;  end
+    %if exist('W','var'),       pack.W       = W;       end
+    %if exist('cooldown','var'),pack.cooldown= cooldown;end
+
+    %CAND = setdiff(propose_fun(I, pack), I);
     CAND = setdiff(propose_fun(I, p), I);   % user domain-specific proposals
+
     if isempty(CAND)
         % fall back: any strong z-score outside I
         fallback = find(z > z_thresh & ~ismember((1:p).', I));
@@ -135,7 +145,7 @@ D = struct('active', I, 'lambda', lambda, 'z', trace(iter).z, ...
            'opts', opts);
 
 % --------- nested helpers (kept in-file for portability) ----------
-function [m,V,F,s2] = vl_inner_step(y, f, m, V, m0, S0i, I, tau, s2, model_args)
+function [m,V,F,s2,J,r] = vl_inner_step(y, f, m, V, m0, S0i, I, tau, s2, model_args)
     % One Gauss–Newton (Laplace) step on active set I at temperature tau.
     % Others clamped at prior mean m0.
     p = numel(m);

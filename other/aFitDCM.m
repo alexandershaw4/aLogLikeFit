@@ -463,11 +463,14 @@ classdef aFitDCM < handle
             opts.tau_sched      = [linspace(0.3,1,6), ones(1,24)];   % explore→settle
             opts.useARD         = true;              % optional but recommended
             opts.z_thresh       = 2.5;
-            opts.kappa_prune    = 0.0;               % prune if ΔF_keep ≤ 0
+            opts.kappa_prune    = 0;               % prune if ΔF_keep ≤ 0
             opts.kappa_add      = 3.0;               % only add strong candidates
-            opts.max_add_per_it = 2;
+            opts.max_add_per_it = 1;
             opts.I0             = (1:p)';            % or a small seed set
+            
             opts.propose_fun    = @(I,p) setdiff((1:p)', I);  % simple: everything not in I
+            %opts.propose_fun = @(I,pack) propose_deltaF_ranked(I, pack, opts);
+
 
 
             %x0 = spm_vec(obj.DCM.M.pE);
