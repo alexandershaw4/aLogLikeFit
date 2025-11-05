@@ -18,7 +18,7 @@ function DCM = dcm_vl_gc(DCM, opts)
 
 % --- defaults
 if nargin<2, opts = struct; end
-dflt = struct('gc_order',1,'mask_fun',@(f) f>0.25,'logpsd',true,...
+dflt = struct('gc_order',1,'mask_fun',@(f) f>0.25,'logpsd',false,...
               'Wfreq',[],'beta_sched',[0.1 0.3 0.6 1],...
               'maxiter',128,'step',1e-1,'verbose',true,...
               'plot',true,'plot_every',5,'show_params',true);
@@ -36,8 +36,19 @@ mask = opts.mask_fun(Hz_full);
 Hz   = Hz_full(mask);
 Sy   = Sy_full(mask,:);                % [F x C]
 F    = numel(Hz);
-if isempty(opts.Wfreq), opts.Wfreq = ones(F,1); end
-Wf   = opts.Wfreq(:);
+%if isempty(opts.Wfreq), opts.Wfreq = ones(F,1); end
+%Wf   = opts.Wfreq(:);
+
+if isempty(opts.Wfreq)
+    % per-frequency variance normalisation (robust scaling)
+    base = opts.logpsd * log(Sy) + (~opts.logpsd) * Sy;
+    v = var(base, 0, 2);                   % variance across channels
+    v(v<=eps) = 1;
+    Wf = 1 ./ sqrt(v);                     % whiten-ish
+else
+    Wf = opts.Wfreq(:);
+end
+
 
 % --- priors / active set
 pE = DCM.M.pE;  pC = DCM.M.pC;
@@ -65,7 +76,8 @@ predict = @(theta_vec) local_S(theta_vec, DCM, Mloc, Hz, size(Sy));
 [y_gc, ~] = pack_gc_obs(Sy, Phi, Wf, use_log);
 
 % --- Jacobian via FD (parfor-friendly)
-h    = 1e-4;
+%h    = 1e-4;
+h = 1e-4 * max(1, abs(mu));
 Jfun = @(th) fd_J_parfor(@(t) pack_gc_mod( predict(embed(Evec,active,t)) , Phi, Wf, use_log), th, h);
 
 % --- initial θ (active)
@@ -177,36 +189,37 @@ function vec = embed(E0, active_ix, theta_a)
     vec = E0; vec(active_ix) = theta_a;
 end
 
-function [ygc, pk] = pack_gc_obs(Sy_, Phi_, Wf_, use_log_)
-    % Build GC-stacked, weighted observation vector.
+    function [ygc, pk] = pack_gc_obs(Sy_, Phi_, Wf_, use_log_)
     F_  = size(Sy_,1);
-    y0  = use_log_ * log(Sy_(:)) + (~use_log_) * real(Sy_(:));
-    W0  = repmat(Wf_, numel(Sy_(:))/F_, 1);
-    ygc = W0 .* y0;
+    base  = use_log_ * log(Sy_) + (~use_log_) * real(Sy_);
+    y0    = base(:);
+    W0    = repmat(Wf_, numel(Sy_(:))/F_, 1);
+    ygc   = W0 .* y0;
     if numel(Phi_)>1
         for kk = 2:numel(Phi_)
-            phi = Phi_{kk};                        % F x 1 complex
-            yk  = log(Sy_) .* real(repmat(phi,1,size(Sy_,2)));
+            phi = Phi_{kk};                           % F x 1
+            yk  = base .* real(repmat(phi,1,size(Sy_,2)));
             ygc = [ygc; W0 .* yk(:)]; %#ok<AGROW>
         end
     end
-    pk = struct(); %#ok<NASGU>
+    pk = struct();
 end
 
+% --- replace inside pack_gc_mod ---
 function ygc = pack_gc_mod(Sm_, Phi_, Wf_, use_log_)
     F_  = size(Sm_,1);
-    y0  = use_log_ * log(Sm_(:)) + (~use_log_) * real(Sm_(:));
-    W0  = repmat(Wf_, numel(Sm_(:))/F_, 1);
-    ygc = W0 .* y0;
+    base  = use_log_ * log(Sm_) + (~use_log_) * real(Sm_);
+    y0    = base(:);
+    W0    = repmat(Wf_, numel(Sm_(:))/F_, 1);
+    ygc   = W0 .* y0;
     if numel(Phi_)>1
         for kk = 2:numel(Phi_)
             phi = Phi_{kk};
-            yk  = log(Sm_) .* real(repmat(phi,1,size(Sm_,2)));
+            yk  = base .* real(repmat(phi,1,size(Sm_,2)));
             ygc = [ygc; W0 .* yk(:)];
         end
     end
 end
-
 function Fq = free_energy_quad(e, beta)
     Fq = -0.5 * beta * (e.'*e);
 end
