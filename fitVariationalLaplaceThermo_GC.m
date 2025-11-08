@@ -24,7 +24,7 @@ function [m, V, D, logL, iter, sigma2, allm, all_elbo] = ...
 %   opts.plots         : 0/1 quick progress plots (default 0)
 %
 % Outputs:
-%   m, V, D, logL, iter, sigma2, allm, all_elbo : as in your original, now GC-aware
+%   m, V, D, logL, iter, sigma2, allm, all_elbo 
 %
 % AS2025 http://cpnslab.com
 
@@ -35,7 +35,7 @@ if ~isfield(opts,'plots'),            opts.plots = 1;            end
 if ~isfield(opts,'varpercthresh'),    opts.varpercthresh = 0.01; end
 if ~isfield(opts,'gc'),               opts.gc = struct;          end
 gc = opts.gc;
-if ~isfield(gc,'order'),    gc.order = 2;        end
+if ~isfield(gc,'order'),    gc.order = 3;        end
 if ~isfield(gc,'dt'),       gc.dt    = 1;        end
 if ~isfield(gc,'lambda'),   gc.lambda = [];      end
 if ~isfield(gc,'op'),       gc.op    = 'fd2';    end
