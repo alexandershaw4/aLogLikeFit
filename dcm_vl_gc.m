@@ -58,7 +58,7 @@ active = find(isfinite(Cvec) & (Cvec > 1e-12));
 na = numel(active);
 
 mu = Evec(active);
-Pi_theta = diag(1 ./ max(Cvec(active), 1e-12));   % diagonal precision (typical for DCM)
+Pi_theta = diag(1 ./ max(Cvec(active), 1e-12));   % diagonal precision 
 
 % --- generalised multipliers Φ_k(f) = (i*2πf)^k
 K   = opts.gc_order;
