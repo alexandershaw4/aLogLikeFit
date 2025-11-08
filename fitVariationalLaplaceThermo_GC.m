@@ -364,7 +364,7 @@ end
 end
 
 % function K = computeSmoothCovariance(~, lengthScale)
-% % simple GP-like prior over parameter indices (kept as in your version)
+% % simple GP-like prior over parameter indices 
 % % note: not a function of m; acts like a smoothness stabiliser
 % n = 256; % if you want it to match numel(m), pass m in and use length(m)
 % K = exp(-pdist2((1:n)',(1:n)').^2/(2*lengthScale^2));
@@ -489,7 +489,7 @@ end
 %     H    = JWG' * JWG;
 %     g    = JWG' * RWg  -  H_prior*(m - m0);
 % 
-%     % Low-rank precision factor update (like yours)
+%     % Low-rank precision factor update
 %     [U,Sv] = svd(H + H_prior, 'econ');
 %     Vr     = U(:,1:k) * sqrt(Sv(1:k,1:k));
 %     Dr     = diag(diag(H + H_prior) - sum(Vr.^2,2));
