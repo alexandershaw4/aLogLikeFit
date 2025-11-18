@@ -1,11 +1,11 @@
 function [m, V, D, logL, iter, sigma2, allm, all_elbo] = ...
-    fitVariationalLaplaceThermo_GC(y, f, m0, S0, maxIter, tol, opts)
-% Thermodynamic Variational Laplace in *Generalised Coordinates*.
-% See fitVariationalLaplaceThermo.m for original implementation.
+    fitVariationalLaplaceThermo_GClam(y, f, m0, S0, maxIter, tol, opts)
+% Thermodynamic Variational Laplace in *Generalised Coordinates* with learned per-order weights λ.
 %
 % This version lifts residuals and Jacobians into generalised coordinates of motion:
 %   r^(0:q) = [r, Dr, D^2 r, ...], with D approximated via finite-difference
-%   (or supplied by the model). The cost becomes weighted across orders via Γ.
+%   (or supplied by the model). The cost is weighted across orders via Γ(λ),
+%   and λ is updated by evidence maximisation (Type-II ML or MAP with Gamma prior).
 %
 % Inputs:
 %   y      : observed vector (length T) OR matrix (T×d stacked columnwise*). We treat it as vec.
@@ -15,19 +15,22 @@ function [m, V, D, logL, iter, sigma2, allm, all_elbo] = ...
 %   m0, S0 : prior mean and covariance
 %   maxIter, tol : as before
 %   opts.gc : struct with fields:
-%       .order   (default 2)   – highest generalised order q
-%       .dt      (default 1)   – sample spacing along the axis to differentiate
-%       .lambda  (default [])  – per-order weights Γ_k; if empty, uses dt-scaled [1, 1/dt^2, 1/dt^4, ...]
-%       .op      ('fd2')       – derivative operator: 'fd1' (first-order), 'fd2' (central, order 2/4 mix)
-%       .boundary('rep')       – boundary handling: 'rep' (replicate), 'mirror', 'zero'
+%       .order   (default 3)    – highest generalised order q
+%       .dt      (default 1)    – sample spacing along the axis to differentiate
+%       .lambda  (default [])   – init per-order weights Γ_k; if empty, uses dt-scaled [1, 1/dt^2, 1/dt^4, ...]
+%       .op      ('fd2')        – derivative operator: 'fd1' (forward), 'fd2' (central)
+%       .boundary('rep')        – boundary handling: 'rep','mirror','zero'
+%       .learn_lambda (true)    – learn λ each iter by EM/MAP
+%       .lambda_prior  ([])     – struct with .a (shape), .b (rate); scalar or (q+1)-vector
+%       .lambda_bounds ([1e-6,1e6]) – clamp λ
+%       .lambda_step (1.0)      – damping in log-space for λ update (<=1)
 %   opts.varpercthresh : relative eigen threshold for low-rank precision (default 0.01)
-%   opts.plots         : 0/1 quick progress plots (default 0)
+%   opts.plots         : 0/1 quick progress plots (default 1)
 %
 % Outputs:
 %   m, V, D, logL, iter, sigma2, allm, all_elbo 
 %
 % AS2025 http://cpnslab.com
-
 
 % ---------------- Defaults ----------------
 if nargin < 7 || isempty(opts), opts = struct; end
@@ -37,16 +40,20 @@ if ~isfield(opts,'gc'),               opts.gc = struct;          end
 
 gc = opts.gc;
 
-if ~isfield(gc,'order'),    gc.order = 3;        end
-if ~isfield(gc,'dt'),       gc.dt    = 1;        end
-if ~isfield(gc,'lambda'),   gc.lambda = [];      end
-if ~isfield(gc,'op'),       gc.op    = 'fd2';    end
-if ~isfield(gc,'boundary'), gc.boundary = 'rep'; end
+if ~isfield(gc,'order'),        gc.order = 3;        end
+if ~isfield(gc,'dt'),           gc.dt    = 1;        end
+if ~isfield(gc,'lambda'),       gc.lambda = [];      end
+if ~isfield(gc,'op'),           gc.op    = 'fd2';    end
+if ~isfield(gc,'boundary'),     gc.boundary = 'rep'; end
+if ~isfield(gc,'learn_lambda'), gc.learn_lambda = true; end
+if ~isfield(gc,'lambda_prior'), gc.lambda_prior = [];  end
+if ~isfield(gc,'lambda_bounds'),gc.lambda_bounds = [1e-6, 1e6]; end
+if ~isfield(gc,'lambda_step'),  gc.lambda_step   = 1.0; end
 
 q   = max(0, round(gc.order));
 dt  = gc.dt;
 
-% per-order weights Γ_k: [1, 1/dt^2, 1/dt^4, ...]
+% per-order weights Γ_k: [1, 1/dt^2, 1/dt^4, ...] as initialisation
 if isempty(gc.lambda)
     lam = (1 ./ (dt.^(2*(0:q)))).';
 else
@@ -61,13 +68,10 @@ y   = y(:);                 % vectorise
 T   = numel(y);
 m   = m0(:);
 n   = T*(q+1);              % stacked residual length
+T_k = T*ones(q+1,1);        % each order has T samples
 
 % Build GC derivative operators (E{1}=I, E{2}=D, ..., E{q+1}=D^q)
 E = build_gc_operators(T, q, dt, gc.op, gc.boundary);
-
-% Weights across orders (Γ = I_T ⊗ diag(lam))
-Gamma     = kron(spdiags(lam,0,q+1,q+1), speye(T));             % (q+1)T × (q+1)T
-sqrtGamma = spdiags(sqrt(repmat(lam,T,1)),0,(q+1)*T,(q+1)*T);
 
 % Low-rank init from S0 (on parameters)
 [U0, S0val] = svd(full(S0), 'econ');
@@ -85,9 +89,8 @@ if opts.plots, fw = figure('position',[140 140 1550 820]); end
 
 % Prior precision helper
 P = size(S0,1);
-K = computeSmoothCovariance(P, 2);          % K is P×P now
-A = (S0 + K);                                % keep symmetric
-% robust PD solve for prior precision without forming inv()
+K = computeSmoothCovariance(P, 2);          % K is P×P
+A = (S0 + K);                               % keep symmetric
 try
     R = chol(A,'lower');
 catch
@@ -117,8 +120,8 @@ for iter_i = 1:maxIter
 
     for kOrd = 1:q
         if ~isempty(dY_model) && size(dY_model,1)==T && size(dY_model,2)>=kOrd
-            yhat_k = dY_model(:,kOrd);    % model predicted derivative order k
-            y_k    = E{kOrd+1} * y;       % numeric derivative of data (for comparison)
+            yhat_k = dY_model(:,kOrd);     % model predicted derivative order k
+            y_k    = E{kOrd+1} * y;        % numeric derivative of data
             rk     = y_k - yhat_k;
         else
             y_k    = E{kOrd+1} * y;
@@ -133,15 +136,59 @@ for iter_i = 1:maxIter
     % Heteroscedastic variance (GC-space t-like)
     sigma2 = max(epsilon, (R.^2 + beta) ./ (nu + R.^2/2));
 
-    % Weighted residuals & log-likelihood
+    % ----- Per-order sufficient statistics for λ updates -----
+    S_k = zeros(q+1,1);
+    off = 0;
+    for kOrd = 0:q
+        idx = (off+1):(off+T_k(kOrd+1));
+        rk  = R(idx);
+        sk  = sigma2(idx);
+        S_k(kOrd+1) = sum((rk.^2) ./ max(1e-12, sk));
+        off = off + T_k(kOrd+1);
+    end
+
+    % ----- Update λ (Type-II ML or MAP with Gamma prior) -----
+    if gc.learn_lambda
+        if ~isempty(gc.lambda_prior)
+            a = gc.lambda_prior.a; b = gc.lambda_prior.b;
+            if isscalar(a), a = a*ones(q+1,1); end
+            if isscalar(b), b = b*ones(q+1,1); end
+            lam_new = ((a(:)-1) + 0.5*T_k(:)) ./ (b(:) + 0.5*S_k(:));
+        else
+            lam_new = T_k(:) ./ max(1e-12, S_k(:));  % EB
+        end
+        % Damped update in log-space
+        if gc.lambda_step < 1
+            lam = exp( (1-gc.lambda_step)*log(lam) + gc.lambda_step*log(max(lam_new,1e-12)) );
+        else
+            lam = lam_new;
+        end
+        lam = min(max(lam, gc.lambda_bounds(1)), gc.lambda_bounds(2));
+    end
+
+    % ----- Build weighting matrices with updated λ -----
+    sqrtGamma = spdiags(sqrt(repmat(lam,T,1)), 0, (q+1)*T, (q+1)*T);
+
+    % Weighted residuals & log-likelihood (now λ-aware)
     Wsqrt  = spdiags(1./sqrt(max(epsilon,sigma2)), 0, n, n);
     RW     = Wsqrt * R;
     RWg    = sqrtGamma * RW;
-    logL_lik = -0.5 * (sum((R.^2)./sigma2) + sum(log(2*pi*sigma2))) ...
-               -0.5 * sum(log(lam + eps));  % constant in params; ok to include/exclude consistently
+
+    ll_orders = 0.5*sum(T_k .* log(max(1e-12,lam))) - 0.5*sum(lam .* S_k);
+    const_sig = -0.5 * sum(log(2*pi*max(epsilon, sigma2)));
+    logL_lik  = ll_orders + const_sig;
+
+    % Prior over λ if provided: sum_k [(a-1)logλ - bλ] (const omitted)
+    logL_lam_prior = 0;
+    if ~isempty(gc.lambda_prior)
+        a = gc.lambda_prior.a; b = gc.lambda_prior.b;
+        if isscalar(a), a = a*ones(q+1,1); end
+        if isscalar(b), b = b*ones(q+1,1); end
+        logL_lam_prior = sum((a(:)-1).*log(max(1e-12,lam)) - b(:).*lam);
+    end
 
     % Jacobian in GC: J0 = dyhat/dm (T×P). Then stack [J0; E2*J0; ...; E{q+1}*J0]
-    J0 = computeJacobian(@(mm) f(mm), m, T);   % helper vectorises outputs
+    J0 = computeJacobian(@(mm) f(mm), m, T);
     J_gc = J0;
     for kOrd = 1:q
         J_gc = [J_gc; E{kOrd+1}*J0]; %#ok<AGROW>
@@ -157,8 +204,8 @@ for iter_i = 1:maxIter
     end
 
     % Weighted Jacobian
-    JW  = Wsqrt * J_gc;          % (n×P)
-    JWG = sqrtGamma * JW;        % ((q+1)T × P)
+    JW  = Wsqrt * J_gc;
+    JWG = sqrtGamma * JW;
 
     % Precision (Gauss–Newton) with prior
     H    = JWG' * JWG;
@@ -191,7 +238,7 @@ for iter_i = 1:maxIter
         logdetH = 2*sum(log(diag(Lchol)));
     end
     logL_entropy = -0.5 * logdetH;
-    logL = logL_lik + logL_prior + logL_entropy;
+    logL = logL_lik + logL_prior + logL_entropy + logL_lam_prior;
     all_elbo = [all_elbo, logL]; %#ok<AGROW>
 
     % Backtracking if ELBO drops
@@ -200,7 +247,8 @@ for iter_i = 1:maxIter
         while ~improved && tries < 8
             tries = tries+1;
             m_try = m_prev + (step^tries)*dm;
-            [logL_try] = quick_elbo_gc(y, f, m_try, T, E, Wsqrt, sqrtGamma, H_prior, q);
+            % quick ELBO proxy with current λ
+            [logL_try] = quick_elbo_gc(y, f, m_try, T, E, lam, q);
             if logL_try > logL
                 m = m_try; logL = logL_try; improved = true;
                 all_elbo(end) = logL;
@@ -260,6 +308,10 @@ for iter_i = 1:maxIter
         semilogy(abs(dm),'o'); title('|dm|'); grid on; box on;
         xlabel('Parameter index');
 
+        % λ display
+        sgtitle(sprintf('it %d | ELBO %.4f | \\lambda: %s', ...
+            iter_i, logL, strjoin(compose('%.3g', lam.'), ' ')));
+
         drawnow;
     end
 
@@ -269,7 +321,8 @@ for iter_i = 1:maxIter
         break;
     end
 
-    fprintf('it %3d | ELBO %.4f | ||dm||=%.3e\n', iter_i, logL, norm(dm));
+    fprintf('it %3d | ELBO %.4f | ||dm||=%.3e | lam: ', iter_i, logL, norm(dm));
+    fprintf('%6.3g ', lam); fprintf('\n');
 end
 
 % ====== Return the best posterior ======
@@ -283,6 +336,19 @@ iter  = best_iter;
 end
 
 % ---------- helpers ----------
+function J = computeJacobian(f, x, T)
+% central difference Jacobian on model output vector (length T)
+epsi = 1e-6;
+P    = numel(x);
+J    = zeros(T,P);
+parfor p = 1:P
+    xp = x; xm = x;
+    xp(p) = xp(p) + epsi;
+    xm(p) = xm(p) - epsi;
+    yp = f(xp); ym = f(xm);
+    J(:,p) = (yp(:) - ym(:)) / (2*epsi);
+end
+end
 
 function E = build_gc_operators(T, q, dt, scheme, bnd)
 % Builds E{1}=I, E{2}=D, ..., E{q+1}=D^q with chosen finite-difference scheme.
@@ -337,49 +403,37 @@ catch
 end
 end
 
-function [logL] = quick_elbo_gc(y, f, m, T, E, Wsqrt, sqrtGamma, H_prior, q)
-% fast ELBO proxy used only for backtracking comparison
+function [logL] = quick_elbo_gc(y, f, m, T, E, lam, q)
+% Fast ELBO proxy (for line-search/backtracking). Omits entropy and m-prior.
 yhat = f(m); yhat = yhat(:);
 r0   = y - yhat;
 R    = r0;
 for kOrd=1:q, R=[R; E{kOrd+1}*r0]; end
-sigma2 = (R.^2 + 1e-3) ./ (3 + R.^2/2);  % same form as main
-RW  = Wsqrt * R;
-RWg = sqrtGamma * RW;
-logL_lik   = -0.5 * (sum((R.^2)./max(1e-6,sigma2)) + sum(log(2*pi*max(1e-6,sigma2))));
-logL_prior = -0.5 * ((m - m)') * H_prior * (m - m); % zero; structurally here for completeness
-logL = logL_lik + logL_prior; % entropy omitted for speed (ok for comparison)
+
+sigma2 = (R.^2 + 1e-3) ./ (3 + R.^2/2);
+n = (q+1)*T;
+
+% Per-order stats
+S_k = zeros(q+1,1); off=0;
+for kOrd = 0:q
+    idx = (off+1):(off+T);
+    rk  = R(idx);
+    sk  = sigma2(idx);
+    S_k(kOrd+1) = sum((rk.^2) ./ max(1e-12, sk));
+    off = off + T;
 end
 
-function J = computeJacobian(f, x, T)
-% central difference Jacobian on model output vector (length T)
-epsi = 1e-6;
-P    = numel(x);
-J    = zeros(T,P);
-parfor p = 1:P
-    xp = x; xm = x;
-    xp(p) = xp(p) + epsi;
-    xm(p) = xm(p) - epsi;
-    yp = f(xp); ym = f(xm);
-    J(:,p) = (yp(:) - ym(:)) / (2*epsi);
-end
-end
+T_k = T*ones(q+1,1);
+ll_orders = 0.5*sum(T_k .* log(max(1e-12,lam))) - 0.5*sum(lam .* S_k);
+const_sig = -0.5 * sum(log(2*pi*max(1e-6, sigma2)));
 
-% function K = computeSmoothCovariance(~, lengthScale)
-% % simple GP-like prior over parameter indices 
-% % note: not a function of m; acts like a smoothness stabiliser
-% n = 256; % if you want it to match numel(m), pass m in and use length(m)
-% K = exp(-pdist2((1:n)',(1:n)').^2/(2*lengthScale^2));
-% K = K + 1e-6*eye(n);
-% end
+logL = ll_orders + const_sig;
+end
 
 function K = computeSmoothCovariance(n, lengthScale)
 % Size-aware GP-like smooth covariance over parameters (P×P).
-% Uses parameter index as a proxy coordinate; tweak if you have structure.
-idx = (1:n)';                     % parameter index as "location"
-D2  = pdist2(idx, idx).^2;        % squared distance on index line
+idx = (1:n)';                     
+D2  = pdist2(idx, idx).^2;        
 K   = exp(-D2/(2*lengthScale^2));
-K   = K + 1e-6*eye(n);            % jitter for PD
+K   = K + 1e-6*eye(n);            
 end
-
-
