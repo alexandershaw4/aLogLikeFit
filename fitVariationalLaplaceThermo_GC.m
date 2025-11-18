@@ -183,14 +183,72 @@ for iter_i = 1:maxIter
 
     % ELBO components
     logL_prior   = -0.5 * ((m - m0)' * H_prior * (m - m0));
+    % try
+    %     Lchol = chol(H_elbo,'lower');
+    %     logdetH = 2*sum(log(diag(Lchol)));
+    % catch
+    %     Lchol = chol(H_elbo + 1e-6*eye(size(H_elbo)),'lower');
+    %     logdetH = 2*sum(log(diag(Lchol)));
+    % end
+    % logL_entropy = -0.5 * logdetH;
+
+
+    % --- Entropy term: log |H_elbo| with robust PD handling ---
+
+    % Symmetrise to remove tiny asymmetries
+    H_elbo = (H_elbo + H_elbo')/2;
+
+    P = size(H_elbo,1);
+    I = eye(P);
+
+    success = false;
+    logdetH = NaN;
+
+    % 1) Try plain Cholesky
     try
-        Lchol = chol(H_elbo,'lower');
+        Lchol   = chol(H_elbo, 'lower');
         logdetH = 2*sum(log(diag(Lchol)));
+        success = true;
     catch
-        Lchol = chol(H_elbo + 1e-6*eye(size(H_elbo)),'lower');
-        logdetH = 2*sum(log(diag(Lchol)));
+        % fall through
     end
+
+    % 2) Try Cholesky with adaptive jitter if needed
+    if ~success
+        diagH   = diag(H_elbo);
+        baseJit = 1e-6 * max(1, max(abs(diagH)));
+        jitter  = baseJit;
+
+        for attempt = 1:5
+            try
+                Lchol   = chol(H_elbo + jitter*I, 'lower');
+                logdetH = 2*sum(log(diag(Lchol)));
+                success = true;
+                break;
+            catch
+                jitter = jitter * 10;
+            end
+        end
+    end
+
+    % 3) Final fallback: eigendecomposition with eigenvalue clamping
+    if ~success
+        [Q, Lambda] = eig(H_elbo);
+        lam         = diag(Lambda);
+
+        % Clamp negatives / zeros
+        lam = max(lam, 1e-8);
+
+        % log |H_elbo| = sum log lambda_i
+        logdetH = sum(log(lam));
+
+        % (We don't actually need Lchol downstream, only logdetH)
+    end
+
     logL_entropy = -0.5 * logdetH;
+
+
+
     logL = logL_lik + logL_prior + logL_entropy;
     all_elbo = [all_elbo, logL]; %#ok<AGROW>
 
@@ -327,15 +385,48 @@ end
 end
 
 function dm = solve_pd(H, g)
-% robust PD solve with fallback
-try
-    L = chol(H,'lower');
-    dm = L'\(L\g);
-catch
-    [dm,flag] = pcg(H + 1e-6*eye(size(H)), g, 1e-8, 200);
-    if flag~=0, dm = (H + 1e-6*eye(size(H)))\g; end
+% Robust PD solve with multiple fallbacks.
+%
+% 1) Symmetrise H.
+% 2) Try Cholesky.
+% 3) If that fails, add increasing jitter.
+% 4) Final fallback: eigendecomposition with eigenvalue clamping.
+
+    % Ensure symmetry (protect against tiny asymmetries)
+    H = (H + H')/2;
+
+    % First attempt: direct Cholesky
+    try
+        L = chol(H, 'lower');
+        dm = L'\(L\g);
+        return;
+    catch
+        % fall through
+    end
+
+    % Second: adaptive jitter on the diagonal
+    diagH   = diag(H);
+    baseJit = 1e-6 * max(1, max(abs(diagH)));
+    jitter  = baseJit;
+    I       = eye(size(H));
+
+    for attempt = 1:5
+        try
+            L = chol(H + jitter*I, 'lower');
+            dm = L'\(L\g);
+            return;
+        catch
+            jitter = jitter * 10; % increase jitter and try again
+        end
+    end
+
+    % Final fallback: eigendecomposition with eigenvalue clamping
+    [V, D] = eig(H);
+    lam    = diag(D);
+    lam    = max(lam, 1e-8);      % clamp negative / tiny eigenvalues
+    dm     = V * ((V' * g) ./ lam);
 end
-end
+
 
 function [logL] = quick_elbo_gc(y, f, m, T, E, Wsqrt, sqrtGamma, H_prior, q)
 % fast ELBO proxy used only for backtracking comparison
