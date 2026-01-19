@@ -37,6 +37,7 @@ classdef aFitDCM < handle
         dfdp
         active_log
         trace
+        poly
     end
     
     methods
@@ -439,8 +440,162 @@ classdef aFitDCM < handle
             % invM = inv(M);  % small matrix
             % obj.CP = Ainv - Ainv * V * invM * V' * Ainv;
 
+            % OUT = fitVariationalLaplaceThermoPolyphonic(y, f, m0, S0, OPT)
 
         end
+
+        function aloglikVLthermPoly(obj,maxIter,plots)
+
+            if nargin < 2 || isempty(maxIter)
+                maxIter = 32;
+            end
+
+            if nargin < 3
+                plots = 1;
+            end
+
+            %fun = @(P,M) spm_vec(obj.DCM.M.IS(spm_unvec(P,obj.DCM.M.pE),obj.DCM.M,obj.DCM.xU));
+
+            x0  = obj.opts.x0(:);
+            fun = @(varargin)obj.wrapdm(varargin{:});
+
+            %x0 = spm_vec(obj.DCM.M.pE);
+            M  = obj.DCM.M;
+            V  = diag(obj.opts.V );
+            y  = spm_vec(obj.DCM.xY.y);%[real(spm_vec(obj.DCM.xY.y)); imag(spm_vec(obj.DCM.xY.y))];
+
+            % [m, V, D, logL, iter, sigma2, allm] 
+            %[obj.X, obj.VV, obj.D, obj.F,~,~,obj.allp,obj.dfdp] = fitVariationalLaplaceThermo(y, fun, x0, V, maxit, 1e-6,plots);
+
+            OPT = struct();
+            % OPT.K = 6;
+            % OPT.maxIter = 80;
+            % %OPT.lambda0 = 0.05;        % start gentle
+            % %OPT.use_diplomacy = 1;     % let coupling rise when voices disagree
+            % OPT.pi_floor = 0.10;       % keep minority voices alive
+            % OPT.phi_fun = @(yhat) yhat;
+            % OPT.phi_fun = @(yhat) (yhat(:) - mean(yhat(:))) / (std(yhat(:)) + 1e-8);
+            % 
+            % %OPT.lambda0      = 0;        % disable coupling until single-voice is stable
+            % %OPT.eta_couple   = 0.01;     % when re-enabled, tiny
+            % OPT.maxStepSize  = 0.05;     % much smaller trust region
+            % OPT.init_jitter  = 1e-3;     % start voices near prior
+            % OPT.nu           = 10;       % stabilise sigma2 update (less spiky)
+            % OPT.epsilon      = 1e-4;     % avoid insane precisions
+            % OPT.beta         = 1e-2;
+            % %OPT.use_diplomacy= 0;        % keep lambda fixed while debugging
+            % 
+            % OPT.rho      = 0.99;   % longer evidence memory
+            % OPT.gamma_pi = 0.3; 
+            % 
+            % OPT.lambda0   = 0.2;
+            % OPT.lambdaMax = 5;
+            % OPT.eta_couple = 0.02;   % small so it doesn't destabilise
+            % OPT.kappa_agree = 0.5;
+            % OPT.use_diplomacy = 1;
+            % OPT.couple_warmup = 10;
+
+            OPT.couple_warmup  = 10;
+            OPT.maxIter = maxIter;
+
+            OPT.lambda0        = 0.05;
+            OPT.lambdaMax      = 1.0;     % not 5 while debugging
+            OPT.kappa_agree    = 0.2;     % gentler
+            OPT.eta_couple     = 0.2;     % ok once preconditioned + clipped
+
+            OPT.cpl_max        = 0.02;    % NEW: clip coupling step
+
+            OPT.rho            = 0.99;
+            OPT.gamma_pi       = 0.2;
+            OPT.pi_floor       = 0.15;    % debugging level
+
+            OPT.phi_fun = @(yhat) (yhat(:)-mean(yhat(:))) / (std(yhat(:))+1e-8);
+
+            OUT = fitVariationalLaplaceThermoPolyphonic(y, fun, x0, V,OPT);
+
+            obj.X = cat(2,OUT.voices.m);
+            for ik = 1:size(obj.X,2)
+                [~, P] = fun(spm_vec(obj.X(:,ik)));
+                obj.Ep{ik} = spm_unvec(spm_vec(P),obj.DD.M.pE);
+            end
+
+            obj.poly = OUT;
+
+            %[obj.X, obj.CP, obj.F] = fitVariationalLaplaceThermo4thOrder(y, fun, x0, V, maxit, 1e-6);
+            %[obj.X, obj.CP, obj.F] = fitVariationalLaplaceNF(y, fun, x0, V, maxit, 1e-6);
+
+            % [~, P] = fun(spm_vec(obj.X));
+            % obj.Ep = spm_unvec(spm_vec(P),obj.DD.M.pE);
+            % %obj.V = obj.CP;
+            % %obj.CP = obj.CP * obj.CP' + obj.D;
+            % 
+            % %V = obj.VV;
+            % 
+            % % V, D approximate PRECISION: H ≈ V*V' + diag(D)
+            % Dinv  = spdiags(1./diag(obj.D), 0, size(obj.D,1), size(obj.D,1));
+            % Mid   = eye(size(obj.VV,2)) + obj.VV'*(Dinv*obj.VV);        % k×k
+            % obj.CP = Dinv - Dinv*obj.VV*(Mid \ (obj.VV'*Dinv));     % ≈ posterior covariance
+            
+            %obj.CP = pinv( (obj.VV*obj.VV') + obj.D);
+
+            % Ainv = diag(1 ./ diag(obj.D));
+            % M = eye(size(V,2)) + V' * Ainv * V;
+            % invM = inv(M);  % small matrix
+            % obj.CP = Ainv - Ainv * V * invM * V' * Ainv;
+
+            % OUT = fitVariationalLaplaceThermoPolyphonic(y, f, m0, S0, OPT)
+
+        end
+
+
+
+        function aloglikVLtherm_Riemannian(obj,maxit,plots)
+
+            if nargin < 2 || isempty(maxit)
+                maxit = 32;
+            end
+
+            if nargin < 3
+                plots = 1;
+            end
+
+            %fun = @(P,M) spm_vec(obj.DCM.M.IS(spm_unvec(P,obj.DCM.M.pE),obj.DCM.M,obj.DCM.xU));
+
+            x0  = obj.opts.x0(:);
+            fun = @(varargin)obj.wrapdm(varargin{:});
+
+            %x0 = spm_vec(obj.DCM.M.pE);
+            M  = obj.DCM.M;
+            V  = diag(obj.opts.V );
+            y  = spm_vec(obj.DCM.xY.y);%[real(spm_vec(obj.DCM.xY.y)); imag(spm_vec(obj.DCM.xY.y))];
+
+            % [m, V, D, logL, iter, sigma2, allm] 
+            [obj.X, obj.VV, obj.D, obj.F,~,~,obj.allp,obj.dfdp] = fitVariationalLaplaceThermo_Riemannian(y, fun, x0, V, maxit, 1e-6,plots);
+            %[obj.X, obj.CP, obj.F] = fitVariationalLaplaceThermo4thOrder(y, fun, x0, V, maxit, 1e-6);
+            %[obj.X, obj.CP, obj.F] = fitVariationalLaplaceNF(y, fun, x0, V, maxit, 1e-6);
+
+            [~, P] = fun(spm_vec(obj.X));
+            obj.Ep = spm_unvec(spm_vec(P),obj.DD.M.pE);
+            %obj.V = obj.CP;
+            %obj.CP = obj.CP * obj.CP' + obj.D;
+            
+            %V = obj.VV;
+
+            % V, D approximate PRECISION: H ≈ V*V' + diag(D)
+            Dinv  = spdiags(1./diag(obj.D), 0, size(obj.D,1), size(obj.D,1));
+            Mid   = eye(size(obj.VV,2)) + obj.VV'*(Dinv*obj.VV);        % k×k
+            obj.CP = Dinv - Dinv*obj.VV*(Mid \ (obj.VV'*Dinv));     % ≈ posterior covariance
+            
+            %obj.CP = pinv( (obj.VV*obj.VV') + obj.D);
+
+            % Ainv = diag(1 ./ diag(obj.D));
+            % M = eye(size(V,2)) + V' * Ainv * V;
+            % invM = inv(M);  % small matrix
+            % obj.CP = Ainv - Ainv * V * invM * V' * Ainv;
+
+
+        end
+
 
         function aloglikVLthermGC(obj,maxit,plots)
 
@@ -449,7 +604,9 @@ classdef aFitDCM < handle
             end
 
             if nargin < 3
-                plots = 1;
+                vopts.plots = 1;
+            else
+                vopts.plots = plots;
             end
 
 
@@ -460,7 +617,7 @@ classdef aFitDCM < handle
             V  = diag(obj.opts.V );
             y  = spm_vec(obj.DCM.xY.y);%[real(spm_vec(obj.DCM.xY.y)); imag(spm_vec(obj.DCM.xY.y))];
 
-            [obj.X, obj.VV, obj.D, obj.F,~,~,obj.allp,obj.dfdp] = fitVariationalLaplaceThermo_GC(y, fun, x0, V, maxit, 1e-6);
+            [obj.X, obj.VV, obj.D, obj.F,~,~,obj.allp,obj.dfdp] = fitVariationalLaplaceThermo_GC(y, fun, x0, V, maxit, 1e-6,vopts);
 
             [~, P] = fun(spm_vec(obj.X));
             obj.Ep = spm_unvec(spm_vec(P),obj.DD.M.pE);
