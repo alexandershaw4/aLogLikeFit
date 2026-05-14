@@ -38,6 +38,12 @@ classdef aFitDCM < handle
         active_log
         trace
         poly
+        x_base          % baseline initial state (vectorised)
+        x_mask          % logical or index vector of free state entries
+        x_prior_var     % prior variances for free state variables
+        nP              % number of parameter variables in optimisation vector
+        nX              % number of state variables in optimisation vector
+        joint           % struct storing joint posterior summaries
     end
     
     methods
@@ -108,7 +114,43 @@ classdef aFitDCM < handle
                 opts.x0  = p(:);
                 opts.V   = c(:); 
             end
-            
+
+            % obj.x_base = spm_vec(DCM.M.x);
+            % 
+            % % choose free states: first pass = voltages only, for example state #1
+            % % adapt this to your state layout
+            % xmask = false(size(obj.x_base));
+            % 
+            % % simplest temporary option: free everything
+            % % xmask(:) = true;
+            % 
+            % % better: free only selected entries
+            % Mx = DCM.M.x;
+            % idx = false(size(Mx));
+            % idx(:,:,1) = true;   % e.g. free only membrane potentials
+            % xmask = spm_vec(idx);
+            % 
+            % obj.x_mask = find(xmask);
+            % obj.nX     = numel(obj.x_mask);
+            % 
+            % % prior over state deviations
+            % x_var = 1 * ones(obj.nX,1);   % tune this
+            % obj.x_prior_var = x_var;
+            % 
+            % % existing reduced parameter vector
+            % p0 = p(:);
+            % vP = c(:);
+            % 
+            % % augmented optimisation vector
+            % opts.x0 = [p0; zeros(obj.nX,1)];
+            % opts.V  = [vP; x_var];
+            % 
+            % obj.nP = numel(p0);
+            % 
+            % opts.infer_x0 = false;
+            % opts.xmask = [];
+            % opts.xprior = [];
+
             
             opts.y   = spm_vec(obj.DCM.xY.y);
             opts.y = [real(opts.y); imag(opts.y)];
@@ -124,7 +166,8 @@ classdef aFitDCM < handle
             
         end
 
-        function [y,PP,s,t,centrefreqs] = wrapdm(obj,Px,varargin)
+        %function [y,PP,s,t,centrefreqs] = wrapdm(obj,Px,varargin)
+        function [y,PP,x] = wrapdm(obj,Px,varargin)
             % wraps the DCM/SPM integrator function into a f(P)
             % anonymous-like function accepting a reduced parameter vector
             % and returning the model output
@@ -166,8 +209,12 @@ classdef aFitDCM < handle
             
             %if nargout(IS) < 8
             %generic, works for all functions....
+            if nargout(IS) ==6
+                [y,~,~,units] = IS(PP,DD.M,DD.xU);
+                x = units;
+            else
                 y    = IS(PP,DD.M,DD.xU);
- 
+            end
            %  elseif nargout(IS) == 8
            %  % this is specific to atcm.integrate3.m
            %      [y,w,s,g,t,pst,l,oth] = IS(PP,DD.M,DD.xU);
@@ -186,6 +233,59 @@ classdef aFitDCM < handle
 
             %y = [real(y); imag(y)];
             
+        end
+
+        function [y,PP,units] = wrapdm_joint(obj,theta,varargin)
+
+            DD = obj.DD;
+            P  = DD.P;
+            cm = DD.cm;
+
+            % split augmented vector
+            p_red = theta(1:obj.nP);
+
+            zx = [];
+            if numel(theta) > obj.nP
+                zx = theta(obj.nP+1:end);
+            end
+
+            % ---- parameter mapping: same as existing wrapdm ----
+            X0 = cm * p_red(:);
+            X0(X0==0) = 1;
+            X0 = full(full(X0) .* exp(full(P(:))));
+            X0 = log(X0);
+            X0(isinf(X0)) = 0;
+
+            PP = spm_unvec(X0, DD.SP);
+
+            if isfield(PP,'J')
+                PP.J(PP.J==0) = -1000;
+            end
+
+            % ---- state update ----
+            Mloc = DD.M;
+
+            if ~isempty(zx)
+                xvec = obj.x_base;
+
+                % simple masked additive perturbation
+                xvec(obj.x_mask) = xvec(obj.x_mask) + zx(:);
+
+                Mloc.x = spm_unvec(xvec, DD.M.x);
+            end
+
+            % ---- call model ----
+            IS = spm_funcheck(Mloc.IS);
+
+            if nargout(IS) >= 4
+                [y,~,~,units] = IS(PP, Mloc, DD.xU);
+            else
+                y = IS(PP, Mloc, DD.xU);
+                units = [];
+            end
+
+            y = spm_vec(y);
+            y = real(y);
         end
 
         function obj = nlls_optimise(obj)
@@ -444,7 +544,39 @@ classdef aFitDCM < handle
 
         end
 
-        function aloglikVLthermPoly(obj,maxIter,plots)
+        function aloglikVLthermPolyMO(obj,maxit,plots)
+
+            if nargin < 2 || isempty(maxit)
+                maxit = 32;
+            end
+
+            if nargin < 3
+                plots = 1;
+            end
+
+            %fun = @(P,M) spm_vec(obj.DCM.M.IS(spm_unvec(P,obj.DCM.M.pE),obj.DCM.M,obj.DCM.xU));
+
+            x0  = obj.opts.x0(:);
+            fun = @(varargin)obj.wrapdm(varargin{:});
+
+            %x0 = spm_vec(obj.DCM.M.pE);
+            M  = obj.DCM.M;
+            V  = diag(obj.opts.V );
+            y  = spm_vec(obj.DCM.xY.y);%[real(spm_vec(obj.DCM.xY.y)); imag(spm_vec(obj.DCM.xY.y))];
+
+            % [m, V, D, logL, iter, sigma2, allm] 
+            %[obj.X, obj.VV, obj.D, obj.F,~,~,obj.allp,obj.dfdp] = fitVariationalLaplaceThermo(y, fun, x0, V, maxit, 1e-6,plots);
+           
+            OUT = fitVariationalLaplaceThermoPolyphonic_MO(y, fun, x0, V);
+
+            [~, P] = fun(spm_vec(OUT.m));
+            obj.Ep = spm_unvec(spm_vec(P),obj.DD.M.pE);
+
+        end
+
+        % OUT = fitVariationalLaplaceThermoPolyphonic_MO(y, f, m0, S0, OPT)
+
+        function aloglikVLthermPoly(obj,maxIter,plots,points)
 
             if nargin < 2 || isempty(maxIter)
                 maxIter = 32;
@@ -453,6 +585,8 @@ classdef aFitDCM < handle
             if nargin < 3
                 plots = 1;
             end
+
+           
 
             %fun = @(P,M) spm_vec(obj.DCM.M.IS(spm_unvec(P,obj.DCM.M.pE),obj.DCM.M,obj.DCM.xU));
 
@@ -510,6 +644,12 @@ classdef aFitDCM < handle
             OPT.pi_floor       = 0.15;    % debugging level
 
             OPT.phi_fun = @(yhat) (yhat(:)-mean(yhat(:))) / (std(yhat(:))+1e-8);
+
+            if nargin == 4 && ~isempty(points)
+                OPT.custom_m0s = points;
+                OPT.init_modes = 'custom';
+                OPT.K = size(points,2);
+            end
 
             OUT = fitVariationalLaplaceThermoPolyphonic(y, fun, x0, V,OPT);
 
@@ -607,11 +747,19 @@ classdef aFitDCM < handle
                 vopts.plots = 1;
             else
                 vopts.plots = plots;
+                
             end
 
+            %vopts.gc.order=1;
 
             x0  = obj.opts.x0(:);
-            fun = @(varargin)obj.wrapdm(varargin{:});
+            %fun = @(varargin)obj.wrapdm(varargin{:});
+
+            if isfield(obj.opts,'infer_x0') && obj.opts.infer_x0
+                fun = @(varargin)obj.wrapdm_joint(varargin{:});
+            else
+                fun = @(varargin)obj.wrapdm(varargin{:});
+            end
 
             M  = obj.DCM.M;
             V  = diag(obj.opts.V );
@@ -628,6 +776,47 @@ classdef aFitDCM < handle
             obj.CP = Dinv - Dinv*obj.VV*(Mid \ (obj.VV'*Dinv));     % ≈ posterior covariance
 
         end
+
+        function aloglikVLthermGC_EBM(obj,maxit,plots)
+
+            if nargin < 2 || isempty(maxit)
+                maxit = 32;
+            end
+
+            if nargin < 3
+                vopts.plots = 1;
+            else
+                vopts.plots = plots;
+
+            end
+
+            %vopts.gc.order=1;
+
+            x0  = obj.opts.x0(:);
+            fun = @(varargin)obj.funwrap(varargin{:});
+
+            M  = obj.DCM.M;
+            V  = diag(obj.opts.V );
+            y  = spm_vec(obj.DCM.xY.y);%[real(spm_vec(obj.DCM.xY.y)); imag(spm_vec(obj.DCM.xY.y))];
+
+            [obj.X, obj.VV, obj.D, obj.F,~,~,obj.allp,obj.dfdp] = fitVariationalLaplaceThermo_GC_EBM(y, fun, x0, V, maxit, 1e-6,vopts);
+
+            [~, P] = fun(spm_vec(obj.X));
+            obj.Ep = spm_unvec(spm_vec(P),obj.DD.M.pE);
+
+            % V, D approximate PRECISION: H ≈ V*V' + diag(D)
+            Dinv  = spdiags(1./diag(obj.D), 0, size(obj.D,1), size(obj.D,1));
+            Mid   = eye(size(obj.VV,2)) + obj.VV'*(Dinv*obj.VV);        % k×k
+            obj.CP = Dinv - Dinv*obj.VV*(Mid \ (obj.VV'*Dinv));     % ≈ posterior covariance
+
+        end
+
+        function [y,units] = funwrap(obj,varargin)
+            f = @(varargin)obj.wrapdm(varargin{:});
+            [y,~,units] = f(varargin{:});
+        end
+
+
 
 
         function aloglikVLtherm_struct(obj,maxit,plots)

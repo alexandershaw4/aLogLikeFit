@@ -25,7 +25,7 @@ function OUT = fitVariationalLaplaceThermoPolyphonic(y, f, m0, S0, OPT)
 % DEPENDENCIES (expected to exist on your path, same as ThermoVL):
 %   computeJacobian, computeSmoothCovariance, makeposdef
 %
-% AS-style, 2026
+% AS, 2026
 
 % ------------------------
 % defaults
@@ -100,25 +100,83 @@ kRank = max(kRank, min(d, d));  % keep your “stability” instinct
 % init pi uniform with floor guaranteed later
 pi_k = ones(K,1)/K;
 
+% for k = 1:K
+%     if strcmpi(init_modes,'custom') && ~isempty(custom_m0s)
+%         fprintf('using custom initial points\n');
+%         mk = custom_m0s(:,k);
+%     else
+%         mk = m0 + init_spread * init_jitter * randn(d,1);
+%     end
+% 
+%     % initialize sigma2 as ones
+%     sigma2k = ones(n,1);
+% 
+%     voices(k).m       = mk;
+%     voices(k).sigma2  = sigma2k;
+%     voices(k).elbo    = -Inf;
+%     voices(k).l_accum = 0;         % leaky evidence accumulator
+%     voices(k).H       = eye(d);    % precision approx (will update)
+%     voices(k).L_H     = eye(d);    % chol(H)
+%     voices(k).phi     = [];        % features
+%     voices(k).yhat    = [];        % prediction
+% end
+
+
+% ------------------------
+% initialise voices (prior-aware + diverse)
+% ------------------------
+voices = repmat(struct(),K,1);
+
+% (optional) reproducibility
+seed = getOpt(OPT,'init_seed',[]);
+if ~isempty(seed), rng(seed); end
+
+% make S0 PD and factorise
+S0pd = makeposdef(S0);
+try
+    L0 = chol(S0pd,'lower');           % S0 = L0*L0'
+catch
+    S0pd = makeposdef(S0pd + 1e-8*eye(d));
+    L0 = chol(S0pd,'lower');
+end
+
+% how many candidate prior draws to consider for diversity
+nCand = getOpt(OPT,'init_nCand', max(50, 10*K));
+
+if strcmpi(init_modes,'custom') && ~isempty(custom_m0s)
+    Minit = custom_m0s(:,1:K);
+else
+    % draw candidates from the true prior, then select a diverse subset
+    % whitened coords: z ~ N(0,I), m = m0 + L0*z
+    Zcand = randn(d, nCand);
+
+    % scale "spread" in whitened units (init_spread=1 = faithful prior scale)
+    Zcand = init_spread * Zcand;
+
+    % pick K diverse points in whitened space (maximin / farthest-point)
+    idx = local_maximin_select(Zcand, K);
+
+    Minit = m0 + L0 * Zcand(:, idx);
+end
+
 for k = 1:K
-    if strcmpi(init_modes,'custom') && ~isempty(custom_m0s)
-        mk = custom_m0s(:,k);
-    else
-        mk = m0 + init_spread * init_jitter * randn(d,1);
-    end
+    mk = Minit(:,k);
 
-    % initialize sigma2 as ones
     sigma2k = ones(n,1);
-
     voices(k).m       = mk;
     voices(k).sigma2  = sigma2k;
     voices(k).elbo    = -Inf;
-    voices(k).l_accum = 0;         % leaky evidence accumulator
-    voices(k).H       = eye(d);    % precision approx (will update)
-    voices(k).L_H     = eye(d);    % chol(H)
-    voices(k).phi     = [];        % features
-    voices(k).yhat    = [];        % prediction
+    voices(k).l_accum = 0;
+    voices(k).H       = eye(d);
+    voices(k).L_H     = eye(d);
+    voices(k).phi     = [];
+    voices(k).yhat    = [];
 end
+
+
+
+
+
 
 % ------------------------
 % trace
@@ -497,7 +555,72 @@ elbo = logL_like + logL_prior + logL_ent;
 st.m      = m_new;
 st.sigma2 = sigma2_new;
 st.H      = H + mu*eye(d);     % store damped precision (more stable)
-st.L_H    = chol(st.H,'lower');
+%st.L_H    = chol(st.H,'lower');
+
+% --- ensure symmetry
+st.H = (st.H + st.H')/2;
+
+% --- adaptive jitter until PD
+j = 1e-10 * trace(st.H)/size(st.H,1);
+if ~isfinite(j) || j <= 0, j = 1e-10; end
+
+I = speye(size(st.H,1));
+maxTries = 12;
+
+for t = 1:maxTries
+    [L,p] = chol(st.H + j*I, 'lower');
+    if p == 0
+        st.L_H = L;
+        %st.H_jitter = j;   % optional: log what you used
+        break
+    end
+    j = j * 10;
+end
+
+if p ~= 0
+    % --- 0) sanity
+    if any(~isfinite(st.H(:)))
+        error('H contains NaN/Inf before chol.');
+    end
+
+    % --- 1) Hermitian / symmetric part (for complex too)
+    Hs = (st.H + st.H')/2;
+
+    % --- 2) eig on the symmetric matrix (orthonormal V)
+    [V,D] = eig(full(Hs));
+    d = real(diag(D));   % should already be real for Hermitian
+
+    % --- 3) floor eigenvalues
+    scale = max(1, max(abs(d)));
+    eps_floor = 1e-6 * scale;      % try 1e-6 (often needed if things are nasty)
+    d = max(d, eps_floor);
+
+    % --- 4) reconstruct (guaranteed Hermitian up to rounding)
+    st.H = V*diag(d)*V';
+    st.H = (st.H + st.H')/2;
+
+    % --- 5) final adaptive jitter for chol
+    I = speye(size(st.H,1));
+    j = 1e-10 * trace(st.H)/size(st.H,1);
+    if ~isfinite(j) || j <= 0, j = 1e-10; end
+
+    for t = 1:12
+        [L,p] = chol(st.H + j*I, 'lower');
+        if p==0
+            st.L_H = L;
+            st.H_jitter = j;
+            break
+        end
+        j = j*10;
+    end
+
+    if p ~= 0
+        % last resort: report minimum eigenvalue for debugging
+        d2 = eig(full((st.H+st.H')/2));
+        error('H not PD after projection+jitter. min(eig)=%g, jitter=%g', min(real(d2)), j);
+    end
+end
+
 st.elbo   = elbo;
 st.yhat   = yhat_new;
 
@@ -532,6 +655,27 @@ function K = computeSmoothCovariance(x, lengthScale)
 
 end
 
+function idx = local_maximin_select(Z, K)
+% Select K columns of Z (d x N) that are well-separated (maximin) in Euclidean
+% distance. If Z is whitened, this corresponds to Mahalanobis separation in m-space.
+
+N = size(Z,2);
+K = min(K, N);
+
+idx = zeros(1,K);
+
+% start from a random candidate (or the one with largest norm)
+[~, idx(1)] = max(sum(Z.^2,1));
+
+% farthest-point sampling
+Dmin = inf(1,N);
+for k = 2:K
+    zlast = Z(:, idx(k-1));
+    d2 = sum((Z - zlast).^2, 1);
+    Dmin = min(Dmin, d2);
+    [~, idx(k)] = max(Dmin);
+end
+end
 
 
 function J = computeJacobian(f, x, m)

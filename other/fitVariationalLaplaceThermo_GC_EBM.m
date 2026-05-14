@@ -1,5 +1,5 @@
 function [m, V, D, logL, iter, sigma2, allm, all_elbo] = ...
-    fitVariationalLaplaceThermo_GC(y, f, m0, S0, maxIter, tol, opts)
+    fitVariationalLaplaceThermo_GC_EBM(y, f, m0, S0, maxIter, tol, opts)
 % Thermodynamic Variational Laplace in *Generalised Coordinates*.
 % See fitVariationalLaplaceThermo.m for original implementation.
 %
@@ -43,10 +43,6 @@ if ~isfield(gc,'lambda'),   gc.lambda = [];      end
 if ~isfield(gc,'op'),       gc.op    = 'fd2';    end
 if ~isfield(gc,'boundary'), gc.boundary = 'rep'; end
 
-if ~isfield(opts,'hessian_method'),     opts.hessian_method = 'gn'; end
-if ~isfield(opts,'hessian_blend'),      opts.hessian_blend = 0.25; end
-if ~isfield(opts,'hess_step_scale'),    opts.hess_step_scale = 1e-4; end
-
 q   = max(0, round(gc.order));
 dt  = gc.dt;
 
@@ -59,6 +55,14 @@ else
         error('opts.gc.lambda must have q+1 entries (order 0..q).');
     end
 end
+
+% this energy based version take a function that returns y, and a second
+% output structure containing dx and x0
+[~,units] = f(m0);
+
+% residuals and precision of dynamics (not y)
+[Q0, Pi_w, rx] = estimate_Q_from_residuals(units);
+
 
 % ---------------- Setup ----------------
 y   = y(:);                 % vectorise
@@ -149,7 +153,6 @@ for iter_i = 1:maxIter
     Rg = sqrtGamma * R;                    % weighted residuals
     logL_lik = -0.5 * (sum((Rg.^2)./sigma2) + sum(log(2*pi*sigma2)));
 
-
     % Jacobian in GC: J0 = dyhat/dm (T×P). Then stack [J0; E2*J0; ...; E{q+1}*J0]
     J0 = computeJacobian(@(mm) f(mm), m, T);   % helper vectorises outputs
     J_gc = J0;
@@ -171,37 +174,8 @@ for iter_i = 1:maxIter
     JWG = sqrtGamma * JW;        % ((q+1)T × P)
 
     % Precision (Gauss–Newton) with prior
-    %H    = JWG' * JWG;
-    %g    = JWG' * RWg  -  H_prior*(m - m0);
-
-
-    % Gradient 7 Hessian - now option for full numerical hess
-    g_data = JWG' * RWg;
-    g      = g_data - H_prior*(m - m0);
-
-    % Curvature choice
-    if ~isfield(opts,'hessian_method'), opts.hessian_method = 'gn'; end
-
-    switch lower(opts.hessian_method)
-        case 'gn'
-            H_data = JWG' * JWG;
-
-        case 'full'
-            H_data = computeObjectiveHessianGC(y, f, m, T, E, sqrtGamma, sigma2, q, opts);
-
-        case 'hybrid'
-            H_gn   = JWG' * JWG;
-            H_full = computeObjectiveHessianGC(y, f, m, T, E, sqrtGamma, sigma2, q, opts);
-            if ~isfield(opts,'hessian_blend'), opts.hessian_blend = 0.25; end
-            a = opts.hessian_blend;
-            H_data = (1-a)*H_gn + a*H_full;
-
-        otherwise
-            error('Unknown opts.hessian_method: %s', opts.hessian_method);
-    end
-
-    H = H_data;
-
+    H    = JWG' * JWG;
+    g    = JWG' * RWg  -  H_prior*(m - m0);
 
     % Low-rank precision factor update
     [U,Sv] = svd(H + H_prior, 'econ');
@@ -216,9 +190,16 @@ for iter_i = 1:maxIter
     maxStep = 1.0;
     if norm(dm) > maxStep, dm = dm * (maxStep/norm(dm)); end
 
+    
+
+
     m_prev = m;
     m      = m + dm;
     allm   = [allm m]; %#ok<AGROW>
+
+    % update x-residuals and precision
+    [~,units] = f(m);
+    [Q0, Pi_w, rx] = estimate_Q_from_residuals(units);
 
     % ELBO components
     logL_prior   = -0.5 * ((m - m0)' * H_prior * (m - m0));
@@ -286,9 +267,25 @@ for iter_i = 1:maxIter
 
     logL_entropy = -0.5 * logdetH;
 
+    %F_dyn = 0.5 * sum(sum(rx .* (Pi_w * rx)));
 
+    %logL = logL_lik + logL_prior + logL_entropy - F_dyn;
 
-    logL = logL_lik + logL_prior + logL_entropy;
+    tmp   = Pi_w * rx;
+    F_dyn = 0.5 * sum(rx(:) .* tmp(:));          % 0.5 * sum_t r'Pi r
+
+    % add log|Pi_w| (per timepoint)  -> contributes +0.5*T*log|Pi_w|
+    Tdyn = size(rx,2);
+    try
+        Lw = chol((Pi_w+Pi_w')/2,'lower');
+        logdetPi = 2*sum(log(diag(Lw)));
+        logL_dyn = -F_dyn + 0.5*Tdyn*logdetPi;
+    catch
+        logL_dyn = -F_dyn; % fallback
+    end
+
+    logL = logL_lik + logL_prior + logL_entropy + logL_dyn;
+
     all_elbo = [all_elbo, logL]; %#ok<AGROW>
 
     % Backtracking if ELBO drops
@@ -380,65 +377,6 @@ iter  = best_iter;
 end
 
 % ---------- helpers ----------
-function H = computeObjectiveHessianGC(y, f, m, T, E, sqrtGamma, sigma2, q, opts)
-% Finite-difference Hessian of the GC weighted data objective:
-%   Phi(m) = 0.5 * sum( Rg(m).^2 ./ sigma2 )
-%
-% sigma2 is treated as fixed during this local curvature calculation.
-
-    P = numel(m);
-    H = zeros(P,P);
-
-    if ~isfield(opts,'hess_step_scale'), opts.hess_step_scale = 1e-4; end
-    d = opts.hess_step_scale * (abs(m) + 1);
-    d = max(d, 1e-6);
-    d = min(d, 1e-2);
-
-    f0 = gc_objective(y, f, m, T, E, sqrtGamma, sigma2, q);
-
-    for i = 1:P
-        ei = zeros(P,1); ei(i) = 1;
-        di = d(i);
-
-        % Diagonal second derivative
-        f_ip = gc_objective(y, f, m + di*ei, T, E, sqrtGamma, sigma2, q);
-        f_im = gc_objective(y, f, m - di*ei, T, E, sqrtGamma, sigma2, q);
-        H(i,i) = (f_ip - 2*f0 + f_im) / (di^2);
-
-        for j = i+1:P
-            ej = zeros(P,1); ej(j) = 1;
-            dj = d(j);
-
-            f_pp = gc_objective(y, f, m + di*ei + dj*ej, T, E, sqrtGamma, sigma2, q);
-            f_pm = gc_objective(y, f, m + di*ei - dj*ej, T, E, sqrtGamma, sigma2, q);
-            f_mp = gc_objective(y, f, m - di*ei + dj*ej, T, E, sqrtGamma, sigma2, q);
-            f_mm = gc_objective(y, f, m - di*ei - dj*ej, T, E, sqrtGamma, sigma2, q);
-
-            H(i,j) = (f_pp - f_pm - f_mp + f_mm) / (4*di*dj);
-            H(j,i) = H(i,j);
-        end
-    end
-
-    % Symmetrise
-    H = (H + H')/2;
-end
-
-function val = gc_objective(y, f, m, T, E, sqrtGamma, sigma2, q)
-% Scalar GC weighted squared-error objective with fixed sigma2
-
-    yhat = f(m);
-    yhat = yhat(:);
-
-    r0 = y - yhat;
-    R  = r0;
-    for kOrd = 1:q
-        R = [R; E{kOrd+1} * r0];
-    end
-
-    Rg  = sqrtGamma * R;
-    val = 0.5 * sum((Rg.^2) ./ max(1e-8, sigma2));
-end
-
 
 function E = build_gc_operators(T, q, dt, scheme, bnd)
 % Builds E{1}=I, E{2}=D, ..., E{q+1}=D^q with chosen finite-difference scheme.
@@ -569,6 +507,88 @@ idx = (1:n)';                     % parameter index as "location"
 D2  = pdist2(idx, idx).^2;        % squared distance on index line
 K   = exp(-D2/(2*lengthScale^2));
 K   = K + 1e-6*eye(n);            % jitter for PD
+end
+
+function [Q, Pi_w, rx] = estimate_Q_from_residuals(units, opts)
+% Estimate process noise covariance Q from dynamics residuals
+% rx   : [nX x T] matrix, columns are r_x(t)
+% opts : struct with fields (all optional)
+%   .mode       = 'diag' | 'full'   (default 'diag')
+%   .shrinkage = alpha in [0,1]     (default 0.1)
+%   .floor     = epsilon           (default 1e-8)
+%
+% Returns:
+%   Q    : covariance estimate
+%   Pi_w: precision (inverse of Q)
+%   stats.var : per-state variances
+%   stats.energy : mean squared residual
+
+dt = 1/600;
+
+x0 = units.x0;
+dx = units.dx;
+
+% Estimate xdot from x0 using finite differences
+xdot = fd_time_derivative(x0, dt, 'fd2', 'rep');  % same dt/boundary style as your GC code
+
+% Dynamics residual: xdot - f(x0,u,P)
+rx = xdot - dx;
+
+
+if nargin < 2, opts = struct(); end
+if ~isfield(opts,'mode'),      opts.mode = 'diag'; end
+if ~isfield(opts,'shrinkage'), opts.shrinkage = 0.1; end
+if ~isfield(opts,'floor'),     opts.floor = 1e-8; end
+
+[nX, T] = size(rx);
+
+% Empirical covariance
+C = (rx * rx.') / max(T,1);   % ML estimate
+
+% Shrink toward diagonal for stability
+D = diag(diag(C));
+Q = (1 - opts.shrinkage) * C + opts.shrinkage * D;
+
+% Optionally force diagonal
+if strcmpi(opts.mode,'diag')
+    Q = diag(diag(Q));
+end
+
+% Floor for positive definiteness
+Q = Q + opts.floor * eye(nX);
+
+% Precision
+% Use Cholesky for stability
+try
+    L = chol(Q,'lower');
+    Pi_w = L'\(L\eye(nX));
+catch
+    % Fallback: pseudo-inverse
+    warning('Q not PD, using pinv');
+    Pi_w = pinv(Q);
+end
+
+% Some useful stats
+stats.var    = diag(Q);
+stats.energy = mean(sum(rx.^2,1));
+end
+
+function xdot = fd_time_derivative(x, dt, scheme, bnd)
+% x: [nX x T] (states across time)
+[nX,T] = size(x);
+e = ones(T,1);
+
+switch lower(scheme)
+    case 'fd1' % forward
+        D = spdiags([-e e],[0 1],T,T)/dt;
+    otherwise  % 'fd2' central
+        D = spdiags([-0.5*e 0.5*e],[-1 1],T,T)/dt;
+end
+
+D = apply_boundary(D,bnd);
+
+% Apply along time: (T×T) * (T×nX) -> (T×nX), then transpose back
+xdot = (D * x.').';
 end
 
 

@@ -1,4 +1,5 @@
-function [beta, lambda_vals, t_stats, p_values, posterior_means, posterior_covs,free_energy] = ...
+function [beta, lambda_vals, t_stats, p_values, posterior_means, posterior_covs, free_energy, ...
+          beta_sd, Pp_pos, Pp_sign] = ...
     peb_ard_with_stats_var(theta, X, Sigma_theta_prior, max_iter, tol)
 % This function implements a Parametric Empirical Bayes (PEB) method for 
 % estimating group-level parameters while incorporating individual-level 
@@ -66,7 +67,10 @@ for iter = 1:max_iter
     end
 
     % Update ARD hyperparameters
-    lambda_vals = 1 ./ (sum(beta.^2, 2) + 1e-6);
+    %lambda_vals = 1 ./ (sum(beta.^2, 2) + 1e-6);
+    lambda_vals = (1 + 1e-6) ./ (sum(beta.^2,2) + 1e-6);
+    lambda_vals = min(lambda_vals, 1e6);     % cap
+    lambda_vals = max(lambda_vals, 1e-6);    % floor
 
     % Update subject- and parameter-specific residual variance
     for i = 1:N
@@ -104,18 +108,65 @@ end
 % Aggregate sigma_squared across subjects to get a single variance per parameter
 sigma_squared_mean = mean(sigma_squared, 1); % (1 x d)
 
-% Compute variance of beta
-beta_variance = zeros(p, d);
-for j = 1:p
-    beta_variance(j, :) = sigma_squared_mean ./ (sum(X(:, j).^2) + lambda_vals(j)^-1);
+% ------------------------------------------------------------
+% Approx posterior SD for beta and posterior probabilities
+% ------------------------------------------------------------
+
+% Use mean residual variance per parameter across subjects as a plug-in noise
+sigma2 = mean(sigma_squared, 1);   % 1 x d
+
+% Effective ridge term for each predictor from ARD:
+% your coordinate update uses denom (X'X + lambda_j)
+% so treat lambda_j as ridge precision-ish stabiliser
+% XtX = sum(X.^2, 1);                % 1 x p
+% 
+% beta_var = zeros(p, d);
+% for j = 1:p
+%     denom = XtX(j) + lambda_vals(j);   % matches your update denominator
+%     beta_var(j, :) = sigma2 ./ max(denom, 1e-12);
+% end
+% 
+% beta_sd = sqrt(beta_var);
+
+XtX = X' * X;                 % p x p
+Lambda = diag(lambda_vals);   % p x p
+
+A = XtX + Lambda;
+A = 0.5*(A+A') + 1e-10*eye(p);    % sym + jitter
+Ainv = inv(A);
+
+beta_var = zeros(p,d);
+for k = 1:d
+    beta_var(:,k) = sigma2(k) * diag(Ainv);   % marginal var for each regressor
 end
+beta_sd = sqrt(max(beta_var, 1e-18));
 
-% Compute t-statistics
-t_stats = beta ./ sqrt(beta_variance);
 
-% Compute p-values (two-tailed)
-df = N - p; % Degrees of freedom
+% Frequentist stats (keep if you want)
+t_stats = beta ./ max(beta_sd, 1e-12);
+df = N - p;
 p_values = 2 * (1 - tcdf(abs(t_stats), df));
+
+% Bayesian posterior probabilities (Gaussian approx)
+% P(beta > 0 | data)
+Pp_pos  = 1 - normcdf(0, beta, beta_sd);
+
+% "probability of the estimated sign" = max(P(beta>0), P(beta<0))
+Pp_sign = max(Pp_pos, 1 - Pp_pos);
+
+
+% % Compute variance of beta
+% beta_variance = zeros(p, d);
+% for j = 1:p
+%     beta_variance(j, :) = sigma_squared_mean ./ (sum(X(:, j).^2) + lambda_vals(j)^-1);
+% end
+% 
+% % Compute t-statistics
+% t_stats = beta ./ sqrt(beta_variance);
+% 
+% % Compute p-values (two-tailed)
+% df = N - p; % Degrees of freedom
+% p_values = 2 * (1 - tcdf(abs(t_stats), df));
 
 % Compute Free Energy 
 log2pi = log(2 * pi);
@@ -127,9 +178,9 @@ for i = 1:N
     Sigma_p = diag(sigma_squared(i,:)); % Likelihood approx
 
     % KL[q || p]
-KL = 0.5 * ( trace(squeeze(Sigma_theta_prior_inv(i,:,:)) * Sigma_q) + ...
-    (theta(i,:)' - mu_q)' * squeeze(Sigma_theta_prior_inv(i,:,:)) * (theta(i,:)' - mu_q) - ...
-    d + log(det(squeeze(Sigma_theta_prior(i,:,:))) + 1e-10) - log(det(Sigma_q) + 1e-10) );
+    KL = 0.5 * ( trace(squeeze(Sigma_theta_prior_inv(i,:,:)) * Sigma_q) + ...
+        (theta(i,:)' - mu_q)' * squeeze(Sigma_theta_prior_inv(i,:,:)) * (theta(i,:)' - mu_q) - ...
+        d + log(det(squeeze(Sigma_theta_prior(i,:,:))) + 1e-10) - log(det(Sigma_q) + 1e-10) );
 
     % Expected log-likelihood
     diff = theta(i,:)' - mu_p;
